@@ -35,6 +35,7 @@ COMPLAINT_KEYWORDS = [
 
 EXPLICIT_EA_KEYWORDS = [
     "experience ambassador",
+    "speak to an ambassador",
     "speak with an ambassador",
     "talk to an ambassador",
     "human agent",

@@ -8,6 +8,29 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@500;600;700&family=JetBrains+Mono:wght@400;500&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <script>
+    (function () {
+      var theme = "light";
+      try {
+        var saved = window.localStorage && window.localStorage.getItem("maris_theme:v1");
+        if (saved === "dark" || saved === "light") {
+          theme = saved;
+        } else if (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) {
+          theme = "dark";
+        }
+      } catch (err) {
+        try {
+          if (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) {
+            theme = "dark";
+          }
+        } catch (err2) {
+          theme = "light";
+        }
+      }
+      document.documentElement.setAttribute("data-theme", theme);
+      document.documentElement.style.colorScheme = theme;
+    })();
+  </script>
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
@@ -73,7 +96,30 @@
         <span id="conciergeStatusText">Concierge Online</span>
       </div>
 
-      <span class="topbar-divider" aria-hidden="true"></span>
+      <span id="topbarAccountDivider" class="topbar-divider" aria-hidden="true"></span>
+
+      <button
+        type="button"
+        id="themeToggleBtn"
+        class="theme-toggle-btn"
+        aria-label="Switch to dark mode"
+        title="Switch to dark mode"
+      >
+        <svg id="themeIconMoon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+        </svg>
+        <svg id="themeIconSun" class="hidden" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="5"/>
+          <line x1="12" y1="1" x2="12" y2="3"/>
+          <line x1="12" y1="21" x2="12" y2="23"/>
+          <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/>
+          <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/>
+          <line x1="1" y1="12" x2="3" y2="12"/>
+          <line x1="21" y1="12" x2="23" y2="12"/>
+          <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/>
+          <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+        </svg>
+      </button>
 
       <div class="account-menu-wrap">
         <button
@@ -90,24 +136,24 @@
         </button>
 
         <div id="accountPopover" class="account-popover hidden" role="menu">
-          <div id="guestPickerSection" class="popover-section">
+          <div id="guestPickerSection" class="popover-section hidden">
             <label for="guestSelect" class="popover-label">Demo mode: choose a sample guest</label>
             <select id="guestSelect" class="popover-select" aria-label="Demo mode: choose a sample guest">
               <option value="ANONYMOUS">Anonymous Visitor</option>
             </select>
           </div>
-          <div id="guestPickerDivider" class="popover-divider"></div>
+          <div id="guestPickerDivider" class="popover-divider hidden"></div>
           <button type="button" id="popoverMyProfileBtn" class="popover-action-item" role="menuitem">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
             <span>Your details</span>
           </button>
-          <button type="button" id="popoverDataPanelBtn" class="popover-action-item" role="menuitem">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/></svg>
-            <span>Data panel</span>
-          </button>
-          <button type="button" id="popoverSwitchAnonBtn" class="popover-action-item" role="menuitem">
+          <button type="button" id="popoverSwitchAnonBtn" class="popover-action-item hidden" role="menuitem">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
             <span>Browse as anonymous visitor</span>
+          </button>
+          <button type="button" id="popoverVisitorSignInBtn" class="popover-action-item hidden" role="menuitem">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg>
+            <span>Sign in</span>
           </button>
           <button type="button" id="popoverLogoutBtn" class="popover-action-item hidden" role="menuitem">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
@@ -156,7 +202,6 @@
         />
         <div>
           <h1 class="login-title">Guest Sign In</h1>
-          <p class="login-subtitle">Sign in to access MARIS, your personal yacht concierge.</p>
         </div>
       </div>
       <div class="gold-hairline"></div>
@@ -197,6 +242,7 @@
         </div>
         <div id="loginError" class="login-error hidden" role="alert"></div>
         <button type="submit" id="loginSubmitBtn" class="login-submit-btn">Sign in</button>
+        <button type="button" id="continueVisitorBtn" class="login-secondary-btn">Continue without signing in</button>
       </form>
     </div>
   </section>
@@ -227,7 +273,7 @@
     <!-- Center Column: MARIS Concierge Chat -->
     <section id="concierge" class="chat-card" aria-label="Concierge Chat">
       <!-- Demo Mode Picker & Sample ID Strip -->
-      <div id="chatIdentityStrip" class="chat-identity-strip">
+      <div id="chatIdentityStrip" class="chat-identity-strip hidden">
         <div class="identity-strip-left">
           <span class="today-pill">Today</span>
           <label for="inlineGuestSelect" class="demo-picker-label">Demo mode: choose a sample guest</label>
@@ -273,7 +319,7 @@
       </div>
 
       <!-- Quick Prompt Chips (Preserved Design & Icons) -->
-      <div class="quick-prompts" aria-label="Suggested inquiries">
+      <div id="quickPrompts" class="quick-prompts" aria-label="Suggested inquiries">
         <button type="button" class="quick-pill" data-prompt="Suggest the best voyage for me.">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
           <span>Best voyage for me</span>
@@ -307,7 +353,7 @@
       <!-- Gold-Bordered Composer + Navy Send Button -->
       <form id="chatForm" class="composer-bar" autocomplete="off">
         <div class="composer-input-wrap">
-          <svg class="composer-sparkle" width="18" height="18" viewBox="0 0 24 24" fill="#C9A255" aria-hidden="true">
+          <svg class="composer-sparkle" width="18" height="18" viewBox="0 0 24 24" fill="var(--gold)" aria-hidden="true">
             <path d="M12 2L14.3 9.7L22 12L14.3 14.3L12 22L9.7 14.3L2 12L9.7 9.7L12 2Z"/>
           </svg>
           <input
@@ -329,16 +375,15 @@
     </section>
   </main>
 
-  <!-- Right-side Data Panel Drawer -->
+  <!-- Right-side Your Details Drawer -->
   <div id="dataDrawerBackdrop" class="data-drawer-backdrop hidden" aria-hidden="true"></div>
-  <aside id="dataDrawer" class="right-drawer hidden" aria-label="Data panel">
+  <aside id="dataDrawer" class="right-drawer hidden" aria-label="Your details">
     <div class="right-drawer-head">
       <div>
-        <p class="modal-eyebrow">Demo Data Panel</p>
-        <h2 class="modal-title">Informatica Guest 360</h2>
-        <span class="demo-insights-sub" style="margin-left:0;">Shows that answers come from Informatica</span>
+        <p class="modal-eyebrow">Guest Account</p>
+        <h2 class="modal-title">Your details</h2>
       </div>
-      <button type="button" id="closeDataDrawerBtn" class="modal-close-icon-btn" aria-label="Close Data panel">&times;</button>
+      <button type="button" id="closeDataDrawerBtn" class="modal-close-icon-btn" aria-label="Close Your details">&times;</button>
     </div>
     <div class="right-drawer-body">
       <div id="guest-profile-panel" class="sidebar-stack" aria-label="Your details">
@@ -354,7 +399,7 @@
           </div>
         </div>
 
-        <div class="guest-hero-row">
+        <div id="guestHeroRow" class="guest-hero-row">
           <div id="profileName" class="guest-hero-name">Anonymous Visitor</div>
           <div id="profileStatusSubtitle" class="guest-hero-sub">Browsing without profile</div>
         </div>
@@ -370,7 +415,7 @@
         </div>
 
         <div class="detail-list">
-          <div class="detail-item">
+          <div id="rowCustomerId" class="detail-item">
             <svg class="detail-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="M15 8h2M15 12h2M7 16h10"/></svg>
             <div class="detail-copy">
               <span id="profileIdLabel" class="detail-label">Guest ID</span>
@@ -500,19 +545,6 @@
   </footer>
   </div>
 
-  <!-- Your Details Modal (Full-screen sheet on mobile) -->
-  <div id="yourDetailsModal" class="modal-backdrop details-modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="yourDetailsModalTitle">
-    <div class="modal-surface details-modal-surface">
-      <div class="modal-header">
-        <div>
-          <p class="modal-eyebrow">Guest Account</p>
-          <h2 id="yourDetailsModalTitle" class="modal-title">Your details</h2>
-        </div>
-        <button type="button" id="closeDetailsModalBtn" class="modal-close-icon-btn" aria-label="Close Your details">&times;</button>
-      </div>
-      <div id="yourDetailsModalBody" class="details-modal-body"></div>
-    </div>
-  </div>
 
   <!-- Voyage Collection Modal -->
   <div id="catalogModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="catalogModalTitle">

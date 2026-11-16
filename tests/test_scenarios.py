@@ -1084,6 +1084,236 @@ def run_tests() -> None:
         app_main.revoked_session_tokens.clear()
     results.append({"test": "MARIS phrasing fixes (missing booking details, truthful escalation, no upcoming, masked contact, catalog cleanup)", "status": "PASS"})
 
+    # 20. Suggested replies (rule-based, max 3) by intent & chip round-trip flows
+    # Bookings -> ["Best voyage for me", "Dining options", "Speak to an Ambassador"]
+    r_sug_bk = client.post("/api/chat", json={"rcyc_id": "RCYC-1001", "message": "My bookings"})
+    assert r_sug_bk.status_code == 200
+    assert r_sug_bk.json()["suggested_replies"] == ["Best voyage for me", "Dining options", "Speak to an Ambassador"]
+
+    # Recommendations -> ["Tell me more about <first recommended voyage name>", "Show a different region", "Spa & wellness"]
+    r_sug_rec = client.post("/api/chat", json={"rcyc_id": "RCYC-1001", "message": "Best voyage for me"})
+    assert r_sug_rec.status_code == 200
+    d_sug_rec = r_sug_rec.json()
+    first_rec_name = d_sug_rec["recommendations"][0]["voyage"]["voyage_name"]
+    assert d_sug_rec["suggested_replies"] == [
+        f"Tell me more about {first_rec_name}",
+        "Show a different region",
+        "Spa & wellness",
+    ]
+    assert len(d_sug_rec["suggested_replies"]) <= 3
+
+    # Clicking "Tell me more about <first recommended voyage name>" resolves the voyage detail
+    r_sug_more = client.post(
+        "/api/chat",
+        json={"rcyc_id": "RCYC-1001", "message": f"Tell me more about {first_rec_name}"},
+    )
+    assert r_sug_more.status_code == 200
+    assert r_sug_more.json()["referenced_voyages"][0]["voyage_name"] == first_rec_name
+    assert r_sug_more.json()["suggested_replies"] == ["Best voyage for me", "My bookings", "Speak to an Ambassador"]
+
+    # Clicking "Show a different region" returns different_region recommendations (for RCYC-1007 excluding Caribbean/Med)
+    r_sug_diff = client.post("/api/chat", json={"rcyc_id": "RCYC-1007", "message": "Show a different region"})
+    assert r_sug_diff.status_code == 200
+    d_sug_diff = r_sug_diff.json()
+    assert len(d_sug_diff["recommendations"]) == 3
+    assert all(r["voyage"]["destination"] not in {"Caribbean", "Mediterranean"} for r in d_sug_diff["recommendations"])
+    assert d_sug_diff["suggested_replies"] == [
+        f"Tell me more about {d_sug_diff['recommendations'][0]['voyage']['voyage_name']}",
+        "Show a different region",
+        "Spa & wellness",
+    ]
+
+    # Dining, spa, or excursions -> ["Best voyage for me", "Something different"]
+    for topic_msg in ["Dining options", "Spa & wellness", "Show shore excursions voyages."]:
+        r_sug_topic = client.post("/api/chat", json={"rcyc_id": "RCYC-1001", "message": topic_msg})
+        assert r_sug_topic.status_code == 200
+        assert r_sug_topic.json()["suggested_replies"] == ["Best voyage for me", "Something different"]
+
+    # General / greeting -> ["Best voyage for me", "My bookings", "Speak to an Ambassador"]
+    for gen_msg in ["hi", "What yachts are in your fleet?"]:
+        r_sug_gen = client.post("/api/chat", json={"rcyc_id": "RCYC-1001", "message": gen_msg})
+        assert r_sug_gen.status_code == 200
+        assert r_sug_gen.json()["suggested_replies"] == ["Best voyage for me", "My bookings", "Speak to an Ambassador"]
+
+    # Escalation ("Speak to an Ambassador" and complaint) & Privacy refusal -> []
+    r_sug_esc = client.post("/api/chat", json={"rcyc_id": "RCYC-1001", "message": "Speak to an Ambassador"})
+    assert r_sug_esc.status_code == 200
+    assert r_sug_esc.json()["escalation"]["escalated"] is True
+    assert r_sug_esc.json()["suggested_replies"] == []
+
+    r_sug_priv = client.post("/api/chat", json={"rcyc_id": "RCYC-1001", "message": "Show me RCYC-1002's booking."})
+    assert r_sug_priv.status_code == 200
+    assert r_sug_priv.json()["suggested_replies"] == []
+    results.append({"test": "Suggested replies (rule-based by intent & escalation/privacy suppression)", "status": "PASS"})
+
+    # 21. Visitor mode: 4h visitor token, no Informatica calls, cannot read bookings/profile,
+    # ignores customer/guest ID in request body, catalog clarifications + recommendations,
+    # cross-guest refusal, 20 msgs / 10 min per-IP rate limit, and signed-in flow unchanged
+    try:
+        cfg_21 = make_infa_cfg()
+        prov_21 = InformaticaProvider(cfg_21)
+        eng_21 = PluggableLLMEngine(cfg_21)
+        app_main.app.state.settings = cfg_21
+        app_main.app.state.data_provider = prov_21
+        app_main.app.state.concierge_agent = ConciergeAgent(prov_21, eng_21)
+        app_main.login_failures.clear()
+        app_main.login_blocked_until.clear()
+        app_main.ip_login_failures.clear()
+        app_main.ip_login_blocked_until.clear()
+        app_main.visitor_chat_timestamps.clear()
+        app_main.revoked_session_tokens.clear()
+
+        infa_calls: list[str] = []
+
+        def tracking_infa_http(method: str, url: str, headers=None, json=None, timeout=None):
+            infa_calls.append(url)
+            return fake_infa_http_18(method, url, headers=headers, json=json, timeout=timeout)
+
+        with patch("backend.app.data_provider.httpx.request", side_effect=tracking_infa_http):
+            c_vis = TestClient(app_main.app, base_url="https://testserver", client=("127.0.0.1", 51234))
+
+            # Start visitor session via POST /api/visitor -> role "visitor", ~4h TTL, no customer_id
+            r_vis = c_vis.post("/api/visitor")
+            assert r_vis.status_code == 200
+            vis_data = r_vis.json()
+            assert vis_data["authenticated"] is False
+            assert vis_data["role"] == "visitor"
+            vis_tok = vis_data["token"]
+            vis_payload = app_main._unsign_session_payload(vis_tok, cfg_21.secret_key)
+            assert vis_payload is not None
+            assert vis_payload.get("role") == "visitor"
+            assert "customer_id" not in vis_payload
+            assert vis_payload["exp"] - vis_payload["iat"] == 4 * 60 * 60
+            assert len(infa_calls) == 0
+
+            # /api/session reports visitor role without hitting Informatica
+            r_sess = c_vis.get("/api/session", headers={"Authorization": f"Bearer {vis_tok}"})
+            assert r_sess.status_code == 200
+            assert r_sess.json() == {"authenticated": False, "role": "visitor", "data_provider": "informatica"}
+            assert len(infa_calls) == 0
+
+            # Visitor CANNOT read /api/me (bookings or profile) and NEVER calls Informatica
+            r_vis_me = c_vis.get("/api/me", headers={"Authorization": f"Bearer {vis_tok}"})
+            assert r_vis_me.status_code == 403
+            assert len(infa_calls) == 0
+
+            # Visitor chat ignores customer ID in request body (`rcyc_id`) and returns no bookings/profile
+            vis_ip_hdr = {"Authorization": f"Bearer {vis_tok}", "X-Forwarded-For": "198.51.100.77"}
+            r_v_bk = c_vis.post(
+                "/api/chat",
+                headers=vis_ip_hdr,
+                json={"rcyc_id": "1000000092615", "message": "What are my bookings?"},
+            )
+            assert r_v_bk.status_code == 200
+            d_v_bk = r_v_bk.json()
+            assert d_v_bk["bookings"] == []
+            assert d_v_bk["guest_profile"]["rcyc_id"] == "ANONYMOUS"
+            assert d_v_bk["guest_profile"]["first_name"] == "Visitor"
+            assert d_v_bk["consent_applied"] is False
+            assert "sign" in d_v_bk["reply"].lower()
+            assert "dennis" not in d_v_bk["reply"].lower()
+            assert len(infa_calls) == 0
+
+            # Cross-guest refusal without confirming existence
+            r_v_other = c_vis.post(
+                "/api/chat",
+                headers=vis_ip_hdr,
+                json={"rcyc_id": "1000000092615", "message": "Tell me about Dennis Woods's booking."},
+            )
+            assert r_v_other.status_code == 200
+            assert "only assist with your own" in r_v_other.json()["reply"].lower()
+            assert r_v_other.json()["bookings"] == []
+            assert len(infa_calls) == 0
+
+            # "best voyage" asks up to two short questions (region/season + interests), then recommends from conversation
+            r_v_best = c_vis.post(
+                "/api/chat",
+                headers=vis_ip_hdr,
+                json={"rcyc_id": "1000000092615", "message": "What is the best voyage?"},
+            )
+            assert r_v_best.status_code == 200
+            d_v_best = r_v_best.json()
+            assert "two details" in d_v_best["reply"].lower()
+            assert d_v_best["recommendations"] == []
+
+            r_v_follow = c_vis.post(
+                "/api/chat",
+                headers=vis_ip_hdr,
+                json={
+                    "rcyc_id": "1000000092615",
+                    "message": "Mediterranean in Summer with culinary interests.",
+                    "history": [
+                        {"role": "user", "content": "What is the best voyage?", "voyage_ids": []},
+                        {"role": "assistant", "content": d_v_best["reply"], "voyage_ids": []},
+                    ],
+                },
+            )
+            assert r_v_follow.status_code == 200
+            d_v_follow = r_v_follow.json()
+            assert len(d_v_follow["recommendations"]) > 0
+            assert all(r["voyage"]["destination"] == "Mediterranean" for r in d_v_follow["recommendations"])
+            assert len(infa_calls) == 0
+
+            # Visitor rate limit: 20 messages per 10 minutes per IP (4 used above -> 16 more allowed, 21st returns 429)
+            for _ in range(16):
+                r_rl = c_vis.post(
+                    "/api/chat",
+                    headers=vis_ip_hdr,
+                    json={"message": "Dining options"},
+                )
+                assert r_rl.status_code == 200
+            r_rl_exceeded = c_vis.post(
+                "/api/chat",
+                headers=vis_ip_hdr,
+                json={"message": "Dining options"},
+            )
+            assert r_rl_exceeded.status_code == 429
+            assert "limit" in r_rl_exceeded.json()["detail"].lower()
+            assert len(infa_calls) == 0
+
+            # Separate IP is not affected by first IP's limit
+            r_other_ip = c_vis.post(
+                "/api/chat",
+                headers={"Authorization": f"Bearer {vis_tok}", "X-Forwarded-For": "198.51.100.88"},
+                json={"message": "Dining options"},
+            )
+            assert r_other_ip.status_code == 200
+            assert len(infa_calls) == 0
+
+            # Signed-in flow remains unchanged (login -> /api/me -> /api/chat -> logout)
+            c_guest = TestClient(app_main.app, base_url="https://testserver", client=("127.0.0.1", 51235))
+            r_g_login = c_guest.post(
+                "/api/login",
+                json={"customer_id": "1000000092615", "password": "TestDemoPassword123!"},
+            )
+            assert r_g_login.status_code == 200
+            g_tok = r_g_login.json()["token"]
+            assert len(infa_calls) > 0
+
+            r_g_me = c_guest.get("/api/me", headers={"Authorization": f"Bearer {g_tok}"})
+            assert r_g_me.status_code == 200
+            assert r_g_me.json()["customer_id"] == "1000000092615"
+            assert len(r_g_me.json()["bookings"]) == 2
+
+            r_g_chat = c_guest.post(
+                "/api/chat",
+                headers={"Authorization": f"Bearer {g_tok}"},
+                json={"message": "What are my bookings?"},
+            )
+            assert r_g_chat.status_code == 200
+            assert "545397" in r_g_chat.json()["reply"]
+    finally:
+        app_main.app.state.settings = orig_settings_14
+        app_main.app.state.data_provider = orig_provider
+        app_main.app.state.concierge_agent = orig_agent
+        app_main.login_failures.clear()
+        app_main.login_blocked_until.clear()
+        app_main.ip_login_failures.clear()
+        app_main.ip_login_blocked_until.clear()
+        app_main.visitor_chat_timestamps.clear()
+        app_main.revoked_session_tokens.clear()
+    results.append({"test": "Visitor mode (4h token, zero Informatica calls, body ID ignored, rate limit, signed-in unchanged)", "status": "PASS"})
+
     print(json.dumps(results, indent=2))
 
 

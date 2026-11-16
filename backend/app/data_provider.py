@@ -987,12 +987,20 @@ class InformaticaProvider(GuestDataProvider):
         attrs = profile.get("attributes", {}) or {}
         masked_email: str | None = None
         email_entries = attrs.get("email")
-        if isinstance(email_entries, list) and email_entries and isinstance(email_entries[0], dict):
-            masked_email = mask_email(email_entries[0].get("email_address"))
+        if isinstance(email_entries, list):
+            for entry in email_entries:
+                if isinstance(entry, dict):
+                    masked_email = mask_email(entry.get("email_address"))
+                    if masked_email:
+                        break
         masked_phone: str | None = None
         phone_entries = attrs.get("phone")
-        if isinstance(phone_entries, list) and phone_entries and isinstance(phone_entries[0], dict):
-            masked_phone = mask_phone(phone_entries[0])
+        if isinstance(phone_entries, list):
+            for entry in phone_entries:
+                if isinstance(entry, dict):
+                    masked_phone = mask_phone(entry)
+                    if masked_phone:
+                        break
         return {"email": masked_email, "phone": masked_phone}
 
 

@@ -27,14 +27,93 @@ const SIDEBAR_OPEN_DESKTOP_KEY = "maris_history_sidebar_open:v1:desktop";
 const SIDEBAR_OPEN_MOBILE_KEY = "maris_history_sidebar_open:v1:mobile";
 const ACTIVE_MOCK_GUEST_KEY = "maris_active_mock_guest:v1";
 const SESSION_TOKEN_KEY = "maris_session_token:v1";
+const THEME_STORAGE_KEY = "maris_theme:v1";
 const MAX_CONVERSATIONS_PER_CUSTOMER = 30;
 const MAX_MESSAGES_PER_CONVERSATION = 60;
-const MOBILE_BREAKPOINT_PX = 760;
+const MOBILE_BREAKPOINT_PX = 1100;
+const FOLLOWUP_CHIPS_IDLE_MS = 8000;
+
+const STARTING_CHIPS = [
+  {
+    label: "Best voyage for me",
+    prompt: "Suggest the best voyage for me.",
+    icon: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>',
+  },
+  {
+    label: "Dining options",
+    prompt: "Show dining options voyages.",
+    icon: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 2v7c0 1.1.9 2 2 2h4a2 2 0 0 0 2-2V2"/><path d="M7 2v20"/><path d="M21 15V2v0a5 5 0 0 0-5 5v6c0 1.1.9 2 2 2h3Zm0 0v7"/></svg>',
+  },
+  {
+    label: "Shore excursions",
+    prompt: "Show shore excursions voyages.",
+    icon: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76"/></svg>',
+  },
+  {
+    label: "Spa & wellness",
+    prompt: "Show spa & wellness voyages.",
+    icon: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>',
+  },
+  {
+    label: "Mediterranean",
+    prompt: "Show Mediterranean voyages.",
+    icon: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>',
+  },
+  {
+    label: "Something different",
+    prompt: "Show me something different from my previous voyage.",
+    icon: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>',
+  },
+  {
+    label: "Experience Ambassador",
+    prompt: "I want to speak with an Experience Ambassador.",
+    icon: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><polyline points="17 11 19 13 23 9"/></svg>',
+  },
+];
+
+const VISITOR_STARTING_CHIPS = [
+  {
+    label: "Voyage Collection",
+    prompt: "Show me the Voyage Collection.",
+    icon: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>',
+  },
+  {
+    label: "Mediterranean",
+    prompt: "Show Mediterranean voyages.",
+    icon: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>',
+  },
+  {
+    label: "Dining options",
+    prompt: "Show dining options voyages.",
+    icon: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 2v7c0 1.1.9 2 2 2h4a2 2 0 0 0 2-2V2"/><path d="M7 2v20"/><path d="M21 15V2v0a5 5 0 0 0-5 5v6c0 1.1.9 2 2 2h3Zm0 0v7"/></svg>',
+  },
+  {
+    label: "Shore excursions",
+    prompt: "Show shore excursions voyages.",
+    icon: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76"/></svg>',
+  },
+  {
+    label: "Spa & wellness",
+    prompt: "Show spa & wellness voyages.",
+    icon: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>',
+  },
+  {
+    label: "Experience Ambassador",
+    prompt: "I want to speak with an Experience Ambassador.",
+    icon: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><polyline points="17 11 19 13 23 9"/></svg>',
+  },
+  {
+    label: "Sign in for personal help",
+    prompt: "Sign in for personal help",
+    icon: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg>',
+  },
+];
 
 const memoryConversationsStore = new Map();
 
 const state = {
   mode: "mock",
+  isVisitor: false,
   me: null,
   rcycId: "ANONYMOUS",
   sampleIds: new Set(["ANONYMOUS"]),
@@ -49,6 +128,8 @@ const state = {
   uiMessages: [],
   busy: false,
   voyagesLoaded: false,
+  followupIdleTimer: null,
+  pendingSuggestedReplies: [],
 };
 
 const el = {
@@ -59,6 +140,7 @@ const el = {
   togglePasswordBtn: document.getElementById("togglePasswordBtn"),
   loginError: document.getElementById("loginError"),
   loginSubmitBtn: document.getElementById("loginSubmitBtn"),
+  continueVisitorBtn: document.getElementById("continueVisitorBtn"),
   workspaceMain: document.getElementById("workspaceMain"),
   sidebarToggleBtn: document.getElementById("sidebarToggleBtn"),
   historyDrawerBackdrop: document.getElementById("historyDrawerBackdrop"),
@@ -75,11 +157,16 @@ const el = {
   inlineLookupForm: document.getElementById("inlineLookupForm"),
   inlineRcycInput: document.getElementById("inlineRcycInput"),
   idLookupFeedback: document.getElementById("idLookupFeedback"),
+  topbarAccountDivider: document.getElementById("topbarAccountDivider"),
+  themeToggleBtn: document.getElementById("themeToggleBtn"),
+  themeIconMoon: document.getElementById("themeIconMoon"),
+  themeIconSun: document.getElementById("themeIconSun"),
   headerGreeting: document.getElementById("headerGreeting"),
   accountMenuBtn: document.getElementById("accountMenuBtn"),
   accountPopover: document.getElementById("accountPopover"),
   popoverMyProfileBtn: document.getElementById("popoverMyProfileBtn"),
   popoverSwitchAnonBtn: document.getElementById("popoverSwitchAnonBtn"),
+  popoverVisitorSignInBtn: document.getElementById("popoverVisitorSignInBtn"),
   popoverLogoutBtn: document.getElementById("popoverLogoutBtn"),
   conciergeStatusIndicator: document.getElementById("conciergeStatusIndicator"),
   conciergeStatusText: document.getElementById("conciergeStatusText"),
@@ -96,18 +183,19 @@ const el = {
   toggleContextPacketBtn: document.getElementById("toggleContextPacketBtn"),
   chatMessages: document.getElementById("chatMessages"),
   typingIndicator: document.getElementById("typingIndicator"),
+  quickPrompts: document.getElementById("quickPrompts"),
   chatForm: document.getElementById("chatForm"),
   messageInput: document.getElementById("messageInput"),
   sendBtn: document.getElementById("sendBtn"),
-  mobileDetailsToggle: document.getElementById("mobileDetailsToggle"),
-  mobileDetailsChevron: document.getElementById("mobileDetailsChevron"),
   sidebarPanel: document.getElementById("guest-profile-panel"),
   profileKicker: document.getElementById("profileKicker"),
   vipBadge: document.getElementById("vipBadge"),
+  guestHeroRow: document.getElementById("guestHeroRow"),
   profileName: document.getElementById("profileName"),
   profileStatusSubtitle: document.getElementById("profileStatusSubtitle"),
   consentOffNotice: document.getElementById("consentOffNotice"),
   demoConsentNotice: document.getElementById("demoConsentNotice"),
+  rowCustomerId: document.getElementById("rowCustomerId"),
   profileIdLabel: document.getElementById("profileIdLabel"),
   profileRcycId: document.getElementById("profileRcycId"),
   rowInfaEmail: document.getElementById("rowInfaEmail"),
@@ -133,10 +221,6 @@ const el = {
   metricBooking: document.getElementById("metricBooking"),
   profileEscalationBadge: document.getElementById("profileEscalationBadge"),
   profileEscalationDetail: document.getElementById("profileEscalationDetail"),
-  yourDetailsModal: document.getElementById("yourDetailsModal"),
-  closeDetailsModalBtn: document.getElementById("closeDetailsModalBtn"),
-  yourDetailsModalBody: document.getElementById("yourDetailsModalBody"),
-  popoverDataPanelBtn: document.getElementById("popoverDataPanelBtn"),
   dataDrawer: document.getElementById("dataDrawer"),
   dataDrawerBackdrop: document.getElementById("dataDrawerBackdrop"),
   closeDataDrawerBtn: document.getElementById("closeDataDrawerBtn"),
@@ -145,6 +229,64 @@ const el = {
   catalogModal: document.getElementById("catalogModal"),
   catalogGrid: document.getElementById("catalogGrid"),
 };
+
+function getSystemPreferredTheme() {
+  try {
+    if (typeof window !== "undefined" && window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) {
+      return "dark";
+    }
+  } catch (err) {
+    // Fallback to light theme when matchMedia is unavailable
+  }
+  return "light";
+}
+
+function readSavedThemePreference() {
+  try {
+    if (typeof window !== "undefined" && window.localStorage) {
+      const saved = window.localStorage.getItem(THEME_STORAGE_KEY);
+      if (saved === "light" || saved === "dark") {
+        return saved;
+      }
+    }
+  } catch (err) {
+    // Fall back to system setting when localStorage is unavailable
+  }
+  return null;
+}
+
+function applyTheme(theme, { persist = false } = {}) {
+  const normalized = theme === "dark" ? "dark" : "light";
+  if (typeof document !== "undefined" && document.documentElement) {
+    document.documentElement.setAttribute("data-theme", normalized);
+    document.documentElement.style.colorScheme = normalized;
+  }
+  if (el.themeToggleBtn) {
+    const label = normalized === "dark" ? "Switch to light mode" : "Switch to dark mode";
+    el.themeToggleBtn.setAttribute("aria-label", label);
+    el.themeToggleBtn.setAttribute("title", label);
+  }
+  if (el.themeIconMoon && el.themeIconSun) {
+    el.themeIconMoon.classList.toggle("hidden", normalized === "dark");
+    el.themeIconSun.classList.toggle("hidden", normalized !== "dark");
+  }
+  if (persist) {
+    try {
+      if (typeof window !== "undefined" && window.localStorage) {
+        window.localStorage.setItem(THEME_STORAGE_KEY, normalized);
+      }
+    } catch (err) {
+      // Ignore storage write failure; in-memory document theme still applies
+    }
+  }
+}
+
+function getCurrentTheme() {
+  if (typeof document !== "undefined" && document.documentElement) {
+    return document.documentElement.getAttribute("data-theme") === "dark" ? "dark" : "light";
+  }
+  return "light";
+}
 
 function currentTimeStr() {
   return new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
@@ -253,6 +395,7 @@ function getActiveConversationStorageKey(sessionIdOverride = null) {
 }
 
 function getSavedActiveConversationId(sessionIdOverride = null) {
+  if (state.isVisitor) return null;
   const key = getActiveConversationStorageKey(sessionIdOverride);
   if (!key) return null;
   const val = safeStorageGet(key);
@@ -260,6 +403,7 @@ function getSavedActiveConversationId(sessionIdOverride = null) {
 }
 
 function setSavedActiveConversationId(conversationId, sessionIdOverride = null) {
+  if (state.isVisitor) return;
   const key = getActiveConversationStorageKey(sessionIdOverride);
   if (!key) return;
   if (conversationId) {
@@ -270,6 +414,7 @@ function setSavedActiveConversationId(conversationId, sessionIdOverride = null) 
 }
 
 function clearSavedActiveConversationId(sessionIdOverride = null) {
+  if (state.isVisitor) return;
   const key = getActiveConversationStorageKey(sessionIdOverride);
   if (key) {
     safeStorageRemove(key);
@@ -289,6 +434,7 @@ function sanitizeUiMessages(rawMessages) {
       content: m.content,
       recommendations: Array.isArray(m.recommendations) ? m.recommendations : [],
       referencedVoyages: Array.isArray(m.referencedVoyages) ? m.referencedVoyages : [],
+      suggestedReplies: Array.isArray(m.suggestedReplies) ? m.suggestedReplies.map(String).slice(0, 3) : [],
       timestamp: typeof m.timestamp === "string" && m.timestamp ? m.timestamp : currentTimeStr(),
     }))
     .slice(-MAX_MESSAGES_PER_CONVERSATION);
@@ -455,6 +601,7 @@ function normalizeConversationsList(list) {
 }
 
 function saveConversationsForCustomer(sessionIdOverride = null) {
+  if (state.isVisitor) return;
   const key = getConversationsStorageKey(sessionIdOverride);
   if (!key) return;
   const cleaned = normalizeConversationsList(state.conversations);
@@ -473,6 +620,7 @@ function saveConversationsForCustomer(sessionIdOverride = null) {
 }
 
 function loadConversationsForCustomer(sessionIdOverride = null) {
+  if (state.isVisitor) return [];
   const convKey = getConversationsStorageKey(sessionIdOverride);
   if (!convKey) return [];
 
@@ -533,6 +681,7 @@ function loadConversationsForCustomer(sessionIdOverride = null) {
 }
 
 function syncActiveConversation({ touchTimestamp = true } = {}) {
+  if (state.isVisitor) return;
   const customerId = String(state.rcycId || "").trim();
   if (!customerId) return;
 
@@ -711,12 +860,7 @@ function renderHistorySidebar() {
     titleEl.textContent = displayTitle;
     titleEl.title = displayTitle;
 
-    const timeEl = document.createElement("span");
-    timeEl.className = "history-item-time";
-    timeEl.textContent = formatConversationDateTime(conv.updatedAt);
-
     selectBtn.appendChild(titleEl);
-    selectBtn.appendChild(timeEl);
     selectBtn.addEventListener("click", () => {
       loadConversationById(conv.id);
       if (isMobileViewport()) {
@@ -793,6 +937,13 @@ function renderHistorySidebar() {
 }
 
 function buildWelcomeTextForCurrentUser() {
+  if (state.isVisitor) {
+    return (
+      "Hello and welcome to **MARIS**, your personal yacht concierge for The Ritz-Carlton Yacht Collection. " +
+      "I can help you explore our voyage collection, destinations, suites, dining, spa & wellness, and shore excursions—" +
+      "or sign in anytime for bookings and personalized assistance."
+    );
+  }
   if (state.mode === "informatica") {
     const me = state.me;
     return me && me.first_name
@@ -812,6 +963,91 @@ function buildWelcomeTextForCurrentUser() {
   return `Welcome back, **${profile.first_name}**! How may I assist you with your upcoming journey or our voyage collection today?`;
 }
 
+function hasSentUserMessage() {
+  return state.uiMessages.some((m) => m && m.role === "user" && m.content && m.content.trim());
+}
+
+function clearFollowupIdleTimer() {
+  if (state.followupIdleTimer !== null) {
+    clearTimeout(state.followupIdleTimer);
+    state.followupIdleTimer = null;
+  }
+}
+
+function renderPromptChips(items, { isStarting = false } = {}) {
+  if (!el.quickPrompts) return;
+  el.quickPrompts.innerHTML = "";
+  for (const item of items) {
+    const label = isStarting ? item.label : String(item || "").trim();
+    const promptText = isStarting ? item.prompt : label;
+    if (!label || !promptText) continue;
+
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "quick-pill";
+    btn.setAttribute("data-prompt", promptText);
+    if (isStarting && item.icon) {
+      btn.innerHTML = item.icon;
+    }
+    const span = document.createElement("span");
+    span.textContent = label;
+    btn.appendChild(span);
+    btn.addEventListener("click", () => {
+      sendMessage(promptText);
+    });
+    el.quickPrompts.appendChild(btn);
+  }
+}
+
+function setChipsVisible(visible) {
+  if (!el.quickPrompts) return;
+  el.quickPrompts.classList.toggle("is-chips-hidden", !visible);
+  el.quickPrompts.setAttribute("aria-hidden", String(!visible));
+  el.quickPrompts.querySelectorAll("button").forEach((btn) => {
+    btn.tabIndex = visible ? 0 : -1;
+    btn.disabled = !visible;
+  });
+}
+
+function hideChips({ clearPending = false } = {}) {
+  clearFollowupIdleTimer();
+  if (clearPending) {
+    state.pendingSuggestedReplies = [];
+  }
+  setChipsVisible(false);
+}
+
+function showStartingChips() {
+  clearFollowupIdleTimer();
+  state.pendingSuggestedReplies = [];
+  const chips = state.isVisitor ? VISITOR_STARTING_CHIPS : STARTING_CHIPS;
+  renderPromptChips(chips, { isStarting: true });
+  setChipsVisible(true);
+}
+
+function scheduleFollowupChips(replies) {
+  clearFollowupIdleTimer();
+  const list = Array.isArray(replies)
+    ? replies.map((s) => String(s || "").trim()).filter(Boolean).slice(0, 3)
+    : [];
+  state.pendingSuggestedReplies = list;
+  setChipsVisible(false);
+  if (list.length === 0 || state.busy) {
+    return;
+  }
+  state.followupIdleTimer = setTimeout(() => {
+    state.followupIdleTimer = null;
+    if (state.busy || !hasSentUserMessage()) return;
+    if (el.messageInput && el.messageInput.value.trim() !== "") return;
+    if (!Array.isArray(state.pendingSuggestedReplies) || state.pendingSuggestedReplies.length === 0) return;
+    renderPromptChips(state.pendingSuggestedReplies, { isStarting: false });
+    if (el.quickPrompts) {
+      void el.quickPrompts.offsetWidth;
+    }
+    setChipsVisible(true);
+  }, FOLLOWUP_CHIPS_IDLE_MS);
+}
+
 function startNewConversation() {
   state.activeConversationId = null;
   state.pendingDeleteConversationId = null;
@@ -828,10 +1064,12 @@ function startNewConversation() {
     content: welcomeContent,
     recommendations: [],
     referencedVoyages: [],
+    suggestedReplies: [],
     timestamp: currentTimeStr(),
   };
   state.uiMessages.push(welcomeMsg);
   appendMessage(welcomeMsg, { persist: false });
+  showStartingChips();
   renderHistorySidebar();
   if (isMobileViewport()) {
     applySidebarOpenState(false, { persist: false });
@@ -852,6 +1090,12 @@ function loadConversationById(conversationId) {
   el.chatMessages.innerHTML = "";
   for (const msg of state.uiMessages) {
     appendMessage(msg, { persist: false });
+  }
+  if (!hasSentUserMessage()) {
+    showStartingChips();
+  } else {
+    const lastAssistant = [...state.uiMessages].reverse().find((m) => m.role === "assistant");
+    scheduleFollowupChips(lastAssistant ? lastAssistant.suggestedReplies : []);
   }
   renderHistorySidebar();
 }
@@ -1122,16 +1366,16 @@ function createMarisAvatar() {
   wrap.className = "maris-avatar";
   wrap.innerHTML = `
     <svg width="22" height="22" viewBox="0 0 36 36" fill="none" aria-hidden="true">
-      <path d="M18 5L29 24H18V5Z" fill="#C9A255"/>
-      <path d="M16 9L8 24H16V9Z" fill="#C9A255" fill-opacity="0.82"/>
-      <path d="M5 26.5H31L27.5 30.5H8.5L5 26.5Z" fill="#C9A255"/>
+      <path d="M18 5L29 24H18V5Z" fill="var(--gold)"/>
+      <path d="M16 9L8 24H16V9Z" fill="var(--gold)" fill-opacity="0.82"/>
+      <path d="M5 26.5H31L27.5 30.5H8.5L5 26.5Z" fill="var(--gold)"/>
     </svg>
   `;
   return wrap;
 }
 
 function appendMessage(
-  { role, content, recommendations = [], referencedVoyages = [], timestamp = null },
+  { role, content, recommendations = [], referencedVoyages = [], suggestedReplies = [], timestamp = null },
   { persist = true } = {}
 ) {
   const timeStr = timestamp || currentTimeStr();
@@ -1194,9 +1438,9 @@ function appendMessage(
         tileDiv.setAttribute("aria-hidden", "true");
         tileDiv.innerHTML = `
           <svg width="24" height="24" viewBox="0 0 36 36" fill="none">
-            <path d="M18 6L28 24H18V6Z" fill="#7D9BBF"/>
-            <path d="M16 10L9 24H16V10Z" fill="#9EB7D4"/>
-            <path d="M6 26H30L27 29.5H9L6 26Z" fill="#7D9BBF"/>
+            <path d="M18 6L28 24H18V6Z" fill="var(--sail-primary)"/>
+            <path d="M16 10L9 24H16V10Z" fill="var(--sail-secondary)"/>
+            <path d="M6 26H30L27 29.5H9L6 26Z" fill="var(--sail-primary)"/>
           </svg>
         `;
 
@@ -1260,6 +1504,7 @@ function appendMessage(
       content,
       recommendations: Array.isArray(recommendations) ? recommendations : [],
       referencedVoyages: Array.isArray(referencedVoyages) ? referencedVoyages : [],
+      suggestedReplies: Array.isArray(suggestedReplies) ? suggestedReplies.map(String).slice(0, 3) : [],
       timestamp: timeStr,
     });
     syncActiveConversation({ touchTimestamp: true });
@@ -1396,10 +1641,14 @@ async function selectGuest(rcycId) {
 }
 
 function configureMockChrome() {
+  state.isVisitor = false;
+  if (el.workspaceMain) el.workspaceMain.classList.remove("is-visitor-mode");
   el.chatIdentityStrip.classList.remove("hidden");
   el.guestPickerSection.classList.remove("hidden");
   el.guestPickerDivider.classList.remove("hidden");
+  el.popoverMyProfileBtn.classList.remove("hidden");
   el.popoverSwitchAnonBtn.classList.remove("hidden");
+  if (el.popoverVisitorSignInBtn) el.popoverVisitorSignInBtn.classList.add("hidden");
   el.popoverLogoutBtn.classList.add("hidden");
   el.demoInsightsToggleBtn.classList.remove("hidden");
   el.demoFooter.classList.remove("hidden");
@@ -1411,14 +1660,59 @@ function configureMockChrome() {
 }
 
 function configureInformaticaChrome() {
+  state.isVisitor = false;
+  if (el.workspaceMain) el.workspaceMain.classList.remove("is-visitor-mode");
   el.chatIdentityStrip.classList.add("hidden");
   el.guestPickerSection.classList.add("hidden");
   el.guestPickerDivider.classList.add("hidden");
+  el.popoverMyProfileBtn.classList.remove("hidden");
   el.popoverSwitchAnonBtn.classList.add("hidden");
+  if (el.popoverVisitorSignInBtn) el.popoverVisitorSignInBtn.classList.add("hidden");
   el.popoverLogoutBtn.classList.remove("hidden");
   el.demoInsightsToggleBtn.classList.add("hidden");
   el.demoInsightsDrawer.classList.add("hidden");
   el.demoFooter.classList.add("hidden");
+}
+
+function configureVisitorChrome() {
+  state.isVisitor = true;
+  state.me = null;
+  state.rcycId = "";
+  state.bookings = [];
+  if (el.workspaceMain) {
+    el.workspaceMain.classList.add("is-visitor-mode");
+    el.workspaceMain.classList.remove("is-sidebar-collapsed");
+  }
+  if (el.sidebarToggleBtn) el.sidebarToggleBtn.classList.add("hidden");
+  if (el.historySidebar) el.historySidebar.classList.remove("is-open-mobile");
+  if (el.historyDrawerBackdrop) el.historyDrawerBackdrop.classList.add("hidden");
+  el.chatIdentityStrip.classList.add("hidden");
+  el.guestPickerSection.classList.add("hidden");
+  el.guestPickerDivider.classList.add("hidden");
+  el.popoverMyProfileBtn.classList.add("hidden");
+  el.popoverSwitchAnonBtn.classList.add("hidden");
+  el.popoverLogoutBtn.classList.add("hidden");
+  if (el.popoverVisitorSignInBtn) el.popoverVisitorSignInBtn.classList.remove("hidden");
+  el.demoInsightsToggleBtn.classList.add("hidden");
+  el.demoInsightsDrawer.classList.add("hidden");
+  el.demoFooter.classList.add("hidden");
+  el.headerGreeting.textContent = "Welcome, Guest";
+  closeDataDrawer();
+}
+
+function enterVisitorMode() {
+  clearFollowupIdleTimer();
+  state.pendingSuggestedReplies = [];
+  state.conversations = [];
+  state.activeConversationId = null;
+  state.pendingDeleteConversationId = null;
+  state.history = [];
+  state.uiMessages = [];
+  state.isVisitor = true;
+  hideLoginView();
+  configureVisitorChrome();
+  renderEscalation(null);
+  startNewConversation();
 }
 
 function resetPasswordToggle() {
@@ -1431,14 +1725,18 @@ function resetPasswordToggle() {
 }
 
 function showLoginView(errorMsg = "") {
+  state.isVisitor = false;
+  if (el.workspaceMain) el.workspaceMain.classList.remove("is-visitor-mode");
   el.infaLoginView.classList.remove("hidden");
   el.workspaceMain.classList.add("hidden");
   if (el.sidebarToggleBtn) el.sidebarToggleBtn.classList.add("hidden");
+  if (el.topbarAccountDivider) el.topbarAccountDivider.classList.add("hidden");
   el.accountMenuBtn.classList.add("hidden");
   el.catalogTriggerBtn.classList.add("hidden");
   el.demoInsightsToggleBtn.classList.add("hidden");
   el.demoInsightsDrawer.classList.add("hidden");
   el.demoFooter.classList.add("hidden");
+  closeDataDrawer();
   closeHistoryDrawer();
   resetPasswordToggle();
   closePopover();
@@ -1453,11 +1751,16 @@ function showLoginView(errorMsg = "") {
 function hideLoginView() {
   el.infaLoginView.classList.add("hidden");
   el.workspaceMain.classList.remove("hidden");
-  if (el.sidebarToggleBtn) el.sidebarToggleBtn.classList.remove("hidden");
+  if (el.sidebarToggleBtn) {
+    el.sidebarToggleBtn.classList.toggle("hidden", state.isVisitor);
+  }
+  if (el.topbarAccountDivider) el.topbarAccountDivider.classList.remove("hidden");
   el.accountMenuBtn.classList.remove("hidden");
   el.catalogTriggerBtn.classList.remove("hidden");
   el.loginError.classList.add("hidden");
-  applySidebarOpenState(getSavedSidebarOpen(), { persist: false });
+  if (!state.isVisitor) {
+    applySidebarOpenState(getSavedSidebarOpen(), { persist: false });
+  }
 }
 
 function formatBookedOnDate(dateStr) {
@@ -1492,7 +1795,6 @@ function buildInfaBookingsFragment(bookingsList) {
   for (const b of bookings) {
     const block = document.createElement("div");
     block.className = "kv-table infa-booking-block";
-    block.style.marginBottom = "0.75rem";
 
     const fields = [["Booking ID", b.booking_id, "mono"]];
     if (b.voyage_name) {
@@ -1547,7 +1849,15 @@ function renderInformaticaMe(me) {
 
   el.headerGreeting.textContent = me.first_name ? `Welcome, ${me.first_name}` : "Welcome";
   el.profileKicker.textContent = "Guest Details";
-  el.profileName.textContent = me.full_name || me.first_name || "Guest";
+
+  const displayName = me.full_name || me.first_name || "";
+  if (displayName) {
+    el.profileName.textContent = displayName;
+    el.profileName.classList.remove("hidden");
+  } else {
+    el.profileName.textContent = "";
+    el.profileName.classList.add("hidden");
+  }
 
   if (me.loyalty_tier) {
     el.profileStatusSubtitle.textContent = me.loyalty_tier;
@@ -1560,25 +1870,39 @@ function renderInformaticaMe(me) {
     el.rowInfaLoyalty.classList.add("hidden");
   }
 
-  el.vipBadge.classList.toggle("hidden", me.vip_status !== true);
-  el.consentOffNotice.classList.add("hidden");
-  el.demoConsentNotice.classList.toggle("hidden", me.demo_consent_assumed !== true);
-
-  el.profileIdLabel.textContent = "Customer ID";
-  el.profileRcycId.textContent = me.customer_id || "";
-
-  if (me.email) {
-    el.rowInfaEmail.classList.remove("hidden");
-    el.attrInfaEmail.textContent = me.email;
-  } else {
-    el.rowInfaEmail.classList.add("hidden");
+  if (el.guestHeroRow) {
+    el.guestHeroRow.classList.toggle("hidden", !displayName && !me.loyalty_tier);
   }
 
-  if (me.phone) {
-    el.rowInfaPhone.classList.remove("hidden");
-    el.attrInfaPhone.textContent = me.phone;
+  el.vipBadge.classList.toggle("hidden", me.vip_status !== true);
+  el.consentOffNotice.classList.add("hidden");
+  el.demoConsentNotice.classList.add("hidden");
+
+  el.profileIdLabel.textContent = "Customer ID";
+  if (me.customer_id) {
+    if (el.rowCustomerId) el.rowCustomerId.classList.remove("hidden");
+    el.profileRcycId.textContent = me.customer_id;
   } else {
-    el.rowInfaPhone.classList.add("hidden");
+    if (el.rowCustomerId) el.rowCustomerId.classList.add("hidden");
+    el.profileRcycId.textContent = "";
+  }
+
+  el.rowInfaEmail.classList.remove("hidden");
+  if (me.email) {
+    el.attrInfaEmail.textContent = me.email;
+    el.attrInfaEmail.classList.remove("is-muted");
+  } else {
+    el.attrInfaEmail.textContent = "Not on file";
+    el.attrInfaEmail.classList.add("is-muted");
+  }
+
+  el.rowInfaPhone.classList.remove("hidden");
+  if (me.phone) {
+    el.attrInfaPhone.textContent = me.phone;
+    el.attrInfaPhone.classList.remove("is-muted");
+  } else {
+    el.attrInfaPhone.textContent = "Not on file";
+    el.attrInfaPhone.classList.add("is-muted");
   }
 
   if (me.consent_configured === true) {
@@ -1644,127 +1968,34 @@ function renderInformaticaWelcome(me, { isFreshLogin = false } = {}) {
   startNewConversation();
 }
 
-function createModalKvRow(label, value, valueClass = "") {
-  const row = document.createElement("div");
-  row.className = "kv-row";
-  const k = document.createElement("span");
-  k.className = "kv-key";
-  k.textContent = label;
-  const v = document.createElement("span");
-  v.className = valueClass ? `kv-val ${valueClass}` : "kv-val";
-  v.textContent = String(value);
-  row.appendChild(k);
-  row.appendChild(v);
-  return row;
-}
-
-function renderYourDetailsModalContent(meData) {
-  el.yourDetailsModalBody.innerHTML = "";
-
-  if (state.mode === "informatica") {
-    const me = meData;
-    if (!me) {
-      const msg = document.createElement("p");
-      msg.style.cssText = "margin:0;color:var(--text-muted);font-size:0.9rem;";
-      msg.textContent = "Guest details are temporarily unavailable.";
-      el.yourDetailsModalBody.appendChild(msg);
-      return;
-    }
-
-    const guestSec = document.createElement("section");
-    guestSec.className = "details-modal-section";
-
-    const headRow = document.createElement("div");
-    headRow.className = "side-card-title-wrap";
-    headRow.style.marginBottom = "0.35rem";
-    const nameEl = document.createElement("div");
-    nameEl.className = "guest-hero-name";
-    nameEl.textContent = me.full_name || me.first_name || "Guest";
-    headRow.appendChild(nameEl);
-    guestSec.appendChild(headRow);
-
-    const kv = document.createElement("div");
-    kv.className = "kv-table";
-    kv.appendChild(createModalKvRow("Customer ID", me.customer_id || "", "mono"));
-    if (me.email) kv.appendChild(createModalKvRow("Email", me.email));
-    if (me.phone) kv.appendChild(createModalKvRow("Phone", me.phone));
-    guestSec.appendChild(kv);
-    el.yourDetailsModalBody.appendChild(guestSec);
-
-    const bookingsSec = document.createElement("section");
-    bookingsSec.className = "details-modal-section";
-    const bookingsTitle = document.createElement("h3");
-    bookingsTitle.className = "details-modal-section-title";
-    bookingsTitle.textContent = "Booking Details";
-    bookingsSec.appendChild(bookingsTitle);
-    bookingsSec.appendChild(buildInfaBookingsFragment(me.bookings));
-    el.yourDetailsModalBody.appendChild(bookingsSec);
-    return;
-  }
-
-  // Mock mode fallback summary inside the modal
-  const profile = state.profile || ANONYMOUS_FALLBACK_PROFILE;
-  const mockSec = document.createElement("section");
-  mockSec.className = "details-modal-section";
-  const nameEl = document.createElement("div");
-  nameEl.className = "guest-hero-name";
-  nameEl.style.marginBottom = "0.5rem";
-  nameEl.textContent = profile.guest_status === "anonymous" ? "Anonymous Visitor" : `${profile.first_name} ${profile.last_name}`.trim();
-  mockSec.appendChild(nameEl);
-
-  const kv = document.createElement("div");
-  kv.className = "kv-table";
-  kv.appendChild(createModalKvRow("Customer ID", profile.rcyc_id || "ANONYMOUS", "mono"));
-  mockSec.appendChild(kv);
-  el.yourDetailsModalBody.appendChild(mockSec);
-}
-
-function closeYourDetailsModal() {
-  if (el.yourDetailsModal) {
-    el.yourDetailsModal.classList.add("hidden");
-  }
-}
-
-async function openYourDetailsModal() {
-  if (!el.yourDetailsModal || !el.yourDetailsModalBody) return;
-  el.yourDetailsModal.classList.remove("hidden");
-
+async function openYourDetailsDrawer() {
+  if (state.isVisitor) return;
+  openDataDrawer();
   if (state.mode !== "informatica") {
-    renderYourDetailsModalContent(null);
     return;
-  }
-
-  if (state.me) {
-    renderYourDetailsModalContent(state.me);
-  } else {
-    el.yourDetailsModalBody.innerHTML =
-      '<div class="details-modal-section"><p style="margin:0;color:var(--text-muted);font-size:0.9rem;">Loading your details…</p></div>';
   }
 
   try {
     const res = await apiFetch("/api/me");
     if (res.status === 401) {
-      closeYourDetailsModal();
+      closeDataDrawer();
       clearSessionToken();
       resetRuntimeSessionToLogin();
       return;
     }
-    if (!res.ok) {
-      if (!state.me) renderYourDetailsModalContent(null);
-      return;
-    }
+    if (!res.ok) return;
     const freshMe = await res.json();
     renderInformaticaMe(freshMe);
-    renderYourDetailsModalContent(freshMe);
   } catch (err) {
-    if (!state.me) {
-      renderYourDetailsModalContent(null);
-    }
+    // Keep last rendered profile in drawer when refresh fails transiently
   }
 }
 
 function resetRuntimeSessionToLogin(errorMsg = "") {
-  closeYourDetailsModal();
+  clearFollowupIdleTimer();
+  state.pendingSuggestedReplies = [];
+  state.isVisitor = false;
+  closeDataDrawer();
   closeHistoryDrawer();
   state.me = null;
   state.rcycId = "";
@@ -1782,27 +2013,28 @@ async function sendMessage(text) {
   const trimmed = text.trim();
   if (!trimmed || state.busy) return;
 
-  const isFirstUserMessage = !state.uiMessages.some(
-    (m) => m && m.role === "user" && m.content && m.content.trim()
-  );
+  const isFirstUserMessage = !hasSentUserMessage();
 
   state.busy = true;
   el.sendBtn.disabled = true;
   el.typingIndicator.classList.remove("is-idle");
   el.typingIndicator.setAttribute("aria-hidden", "false");
+  hideChips({ clearPending: true });
 
   appendMessage({ role: "user", content: trimmed });
   el.messageInput.value = "";
   const targetConvId = state.activeConversationId;
 
   const triggerTitleOnce = () => {
-    if (!isFirstUserMessage || !targetConvId) return;
+    if (state.isVisitor || !isFirstUserMessage || !targetConvId) return;
     const targetConv = state.conversations.find((c) => c.id === targetConvId);
     if (!targetConv || targetConv.titleGenerated) return;
     void requestConversationTitle(trimmed).then((generatedTitle) => {
       setConversationTitleOnce(targetConvId, generatedTitle);
     });
   };
+
+  let nextSuggestedReplies = [];
 
   try {
     const bodyPayload =
@@ -1819,6 +2051,16 @@ async function sendMessage(text) {
     if (state.mode === "informatica" && res.status === 401) {
       clearSessionToken();
       resetRuntimeSessionToLogin();
+      return;
+    }
+    if (state.isVisitor && res.status === 429) {
+      const rateErr = await res.json().catch(() => ({}));
+      appendMessage({
+        role: "assistant",
+        content:
+          rateErr.detail ||
+          "You have reached the visitor chat limit of 20 messages per 10 minutes. Please wait a few minutes, or sign in for continued assistance from MARIS.",
+      });
       return;
     }
     if (state.mode === "informatica" && res.status === 503) {
@@ -1846,11 +2088,17 @@ async function sendMessage(text) {
       renderProfile(data.guest_profile, data.bookings, data.escalation);
       updateDemoInsights(data);
     }
+
+    nextSuggestedReplies = Array.isArray(data.suggested_replies)
+      ? data.suggested_replies.slice(0, 3)
+      : [];
+
     appendMessage({
       role: "assistant",
       content: data.reply,
       recommendations: data.recommendations,
       referencedVoyages: data.referenced_voyages,
+      suggestedReplies: nextSuggestedReplies,
     });
     triggerTitleOnce();
   } catch (err) {
@@ -1865,6 +2113,7 @@ async function sendMessage(text) {
     el.typingIndicator.classList.add("is-idle");
     el.typingIndicator.setAttribute("aria-hidden", "true");
     el.chatMessages.scrollTop = el.chatMessages.scrollHeight;
+    scheduleFollowupChips(nextSuggestedReplies);
   }
 }
 
@@ -1884,10 +2133,9 @@ async function openCatalogModal() {
 
       const top = document.createElement("div");
       const kicker = document.createElement("div");
-      kicker.style.cssText = "display:flex;justify-content:space-between;font-size:0.74rem;color:var(--text-muted);margin-bottom:0.25rem;";
+      kicker.className = "catalog-card-kicker";
       const idSpan = document.createElement("span");
-      idSpan.className = "mono";
-      idSpan.style.cssText = "color:var(--navy-ink);font-weight:600;";
+      idSpan.className = "mono catalog-card-id";
       idSpan.textContent = v.voyage_id;
       const shipSpan = document.createElement("span");
       shipSpan.textContent = v.yacht_name;
@@ -1895,15 +2143,15 @@ async function openCatalogModal() {
       kicker.appendChild(shipSpan);
 
       const nameDiv = document.createElement("div");
-      nameDiv.style.cssText = "font-size:1.05rem;font-weight:700;color:var(--navy-ink);";
+      nameDiv.className = "catalog-card-title";
       nameDiv.textContent = v.voyage_name;
 
       const metaDiv = document.createElement("div");
-      metaDiv.style.cssText = "font-size:0.8rem;color:var(--text-muted);margin-top:0.2rem;";
+      metaDiv.className = "catalog-card-meta";
       metaDiv.textContent = `${v.destination} · ${v.duration} nights · ${v.season} · From ${formatCurrency(v.price)}`;
 
       const hlP = document.createElement("p");
-      hlP.style.cssText = "font-size:0.8rem;margin:0.55rem 0 0;color:var(--text);";
+      hlP.className = "catalog-card-desc";
       hlP.textContent = v.highlights;
 
       top.appendChild(kicker);
@@ -1913,7 +2161,7 @@ async function openCatalogModal() {
 
       const bottom = document.createElement("div");
       const suitesDiv = document.createElement("div");
-      suitesDiv.style.cssText = "font-size:0.75rem;color:var(--text-muted);margin-bottom:0.55rem;";
+      suitesDiv.className = "catalog-card-suites";
       suitesDiv.textContent = `Suites: ${v.suite_availability}`;
 
       const btn = document.createElement("button");
@@ -1943,6 +2191,27 @@ function closePopover() {
   el.accountMenuBtn.setAttribute("aria-expanded", "false");
 }
 
+function openDataDrawer() {
+  if (el.dataDrawer) {
+    el.dataDrawer.classList.remove("hidden");
+  }
+  if (el.dataDrawerBackdrop) {
+    el.dataDrawerBackdrop.classList.remove("hidden");
+  }
+  if (el.sidebarPanel) {
+    el.sidebarPanel.classList.remove("is-collapsed-mobile");
+  }
+}
+
+function closeDataDrawer() {
+  if (el.dataDrawer) {
+    el.dataDrawer.classList.add("hidden");
+  }
+  if (el.dataDrawerBackdrop) {
+    el.dataDrawerBackdrop.classList.add("hidden");
+  }
+}
+
 function toggleDemoInsights(forceState) {
   const shouldOpen =
     typeof forceState === "boolean"
@@ -1968,7 +2237,7 @@ document.addEventListener("click", (e) => {
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
     closePopover();
-    closeYourDetailsModal();
+    closeDataDrawer();
     if (isMobileViewport() && state.sidebarOpen) {
       applySidebarOpenState(false, { persist: true });
     }
@@ -1984,13 +2253,36 @@ el.popoverMyProfileBtn.addEventListener("click", (e) => {
   e.preventDefault();
   e.stopPropagation();
   closePopover();
-  openYourDetailsModal();
+  openYourDetailsDrawer();
 });
+
+if (el.closeDataDrawerBtn) {
+  el.closeDataDrawerBtn.addEventListener("click", closeDataDrawer);
+}
+
+if (el.dataDrawerBackdrop) {
+  el.dataDrawerBackdrop.addEventListener("click", closeDataDrawer);
+}
 
 el.popoverSwitchAnonBtn.addEventListener("click", () => {
   closePopover();
   selectGuest("ANONYMOUS");
 });
+
+if (el.popoverVisitorSignInBtn) {
+  el.popoverVisitorSignInBtn.addEventListener("click", async (e) => {
+    e.preventDefault();
+    closePopover();
+    try {
+      await apiFetch("/api/logout", { method: "POST" });
+    } catch (err) {
+      // Ignore network error on visitor sign-in transition
+    }
+    clearSessionToken();
+    el.loginPassword.value = "";
+    resetRuntimeSessionToLogin();
+  });
+}
 
 el.popoverLogoutBtn.addEventListener("click", async (e) => {
   e.preventDefault();
@@ -2003,9 +2295,41 @@ el.popoverLogoutBtn.addEventListener("click", async (e) => {
   }
   clearSessionToken();
   el.loginPassword.value = "";
-  // Keep Customer ID conversations in localStorage on sign out; clear runtime UI state only
+  // Keep Customer ID conversations & user theme preference in localStorage on sign out
   resetRuntimeSessionToLogin();
 });
+
+if (el.continueVisitorBtn) {
+  el.continueVisitorBtn.addEventListener("click", async () => {
+    if (el.continueVisitorBtn.disabled) return;
+    el.continueVisitorBtn.disabled = true;
+    if (el.loginSubmitBtn) el.loginSubmitBtn.disabled = true;
+    el.loginError.classList.add("hidden");
+
+    try {
+      const res = await fetch("/api/visitor", {
+        method: "POST",
+        credentials: "same-origin",
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok || body.role !== "visitor") {
+        el.loginError.textContent = body.detail || "Unable to start guest browsing right now.";
+        el.loginError.classList.remove("hidden");
+        return;
+      }
+      if (body.token) {
+        setSessionToken(body.token);
+      }
+      enterVisitorMode();
+    } catch (err) {
+      el.loginError.textContent = "Unable to connect to guest browsing service.";
+      el.loginError.classList.remove("hidden");
+    } finally {
+      el.continueVisitorBtn.disabled = false;
+      if (el.loginSubmitBtn) el.loginSubmitBtn.disabled = false;
+    }
+  });
+}
 
 if (el.togglePasswordBtn) {
   el.togglePasswordBtn.addEventListener("click", () => {
@@ -2024,6 +2348,7 @@ el.infaLoginForm.addEventListener("submit", async (e) => {
   if (!customerId || !password) return;
 
   el.loginSubmitBtn.disabled = true;
+  if (el.continueVisitorBtn) el.continueVisitorBtn.disabled = true;
   el.loginSubmitBtn.textContent = "Signing in...";
   el.loginError.classList.add("hidden");
 
@@ -2059,6 +2384,7 @@ el.infaLoginForm.addEventListener("submit", async (e) => {
       return;
     }
     const me = await meRes.json();
+    configureInformaticaChrome();
     hideLoginView();
     renderEscalation(null);
     renderInformaticaMe(me);
@@ -2068,6 +2394,7 @@ el.infaLoginForm.addEventListener("submit", async (e) => {
     el.loginError.classList.remove("hidden");
   } finally {
     el.loginSubmitBtn.disabled = false;
+    if (el.continueVisitorBtn) el.continueVisitorBtn.disabled = false;
     el.loginSubmitBtn.textContent = "Sign in";
   }
 });
@@ -2092,18 +2419,43 @@ el.inlineLookupForm.addEventListener("submit", (e) => {
   }
 });
 
-// Mobile collapsible "Your details" (only <=760px; desktop >760px always shows panel)
+// Theme Toggle & System Preference Sync
+if (el.themeToggleBtn) {
+  el.themeToggleBtn.addEventListener("click", () => {
+    const nextTheme = getCurrentTheme() === "dark" ? "light" : "dark";
+    applyTheme(nextTheme, { persist: true });
+  });
+}
+
+try {
+  if (typeof window !== "undefined" && window.matchMedia) {
+    const colorSchemeQuery = window.matchMedia("(prefers-color-scheme: dark)");
+    const handleSystemThemeChange = (ev) => {
+      if (readSavedThemePreference() === null) {
+        applyTheme(ev.matches ? "dark" : "light", { persist: false });
+      }
+    };
+    if (typeof colorSchemeQuery.addEventListener === "function") {
+      colorSchemeQuery.addEventListener("change", handleSystemThemeChange);
+    } else if (typeof colorSchemeQuery.addListener === "function") {
+      colorSchemeQuery.addListener(handleSystemThemeChange);
+    }
+  }
+} catch (err) {
+  // Ignore matchMedia listener errors
+}
+
+// Responsive sidebar state
 let lastMobileViewport = isMobileViewport();
 
 function initMobileDetailsState() {
   const mobileNow = isMobileViewport();
-  if (mobileNow) {
-    el.sidebarPanel.classList.add("is-collapsed-mobile");
-    el.mobileDetailsToggle.setAttribute("aria-expanded", "false");
-    el.mobileDetailsChevron.style.transform = "rotate(0deg)";
-  } else {
+  if (el.sidebarPanel) {
     el.sidebarPanel.classList.remove("is-collapsed-mobile");
-    el.mobileDetailsToggle.setAttribute("aria-expanded", "true");
+  }
+  if (state.isVisitor) {
+    applySidebarOpenState(false, { persist: false });
+    return;
   }
 
   if (mobileNow !== lastMobileViewport) {
@@ -2114,12 +2466,6 @@ function initMobileDetailsState() {
   }
 }
 
-el.mobileDetailsToggle.addEventListener("click", () => {
-  const collapsed = el.sidebarPanel.classList.toggle("is-collapsed-mobile");
-  el.mobileDetailsToggle.setAttribute("aria-expanded", String(!collapsed));
-  el.mobileDetailsChevron.style.transform = collapsed ? "rotate(0deg)" : "rotate(180deg)";
-});
-
 window.addEventListener("resize", initMobileDetailsState);
 
 // Chat & Modal Controls
@@ -2128,14 +2474,18 @@ el.chatForm.addEventListener("submit", (e) => {
   sendMessage(el.messageInput.value);
 });
 
+if (el.messageInput) {
+  el.messageInput.addEventListener("input", () => {
+    if (!hasSentUserMessage()) return;
+    hideChips({ clearPending: false });
+    if (el.messageInput.value.trim() === "" && !state.busy && state.pendingSuggestedReplies.length > 0) {
+      scheduleFollowupChips(state.pendingSuggestedReplies);
+    }
+  });
+}
+
 el.toggleContextPacketBtn.addEventListener("click", () => {
   el.escalationPacketPre.classList.toggle("hidden");
-});
-
-document.querySelectorAll(".quick-pill").forEach((btn) => {
-  btn.addEventListener("click", () => {
-    sendMessage(btn.getAttribute("data-prompt") || "");
-  });
 });
 
 el.catalogTriggerBtn.addEventListener("click", openCatalogModal);
@@ -2148,17 +2498,6 @@ el.catalogModal.addEventListener("click", (e) => {
   }
 });
 
-if (el.closeDetailsModalBtn) {
-  el.closeDetailsModalBtn.addEventListener("click", closeYourDetailsModal);
-}
-if (el.yourDetailsModal) {
-  el.yourDetailsModal.addEventListener("click", (e) => {
-    if (e.target === el.yourDetailsModal) {
-      closeYourDetailsModal();
-    }
-  });
-}
-
 if (el.newConversationBtn) {
   el.newConversationBtn.addEventListener("click", () => {
     startNewConversation();
@@ -2166,6 +2505,7 @@ if (el.newConversationBtn) {
 }
 if (el.sidebarToggleBtn) {
   el.sidebarToggleBtn.addEventListener("click", () => {
+    if (state.isVisitor) return;
     applySidebarOpenState(!state.sidebarOpen, { persist: true });
   });
 }
@@ -2182,6 +2522,13 @@ if (el.historyDrawerBackdrop) {
 
 // Initialize
 (async function init() {
+  try {
+    const initialTheme = readSavedThemePreference() || getSystemPreferredTheme();
+    applyTheme(initialTheme, { persist: false });
+  } catch (err) {
+    // Non-fatal theme sync setup failure
+  }
+
   try {
     state.sidebarOpen = getSavedSidebarOpen();
     initMobileDetailsState();
@@ -2204,8 +2551,22 @@ if (el.historyDrawerBackdrop) {
     state.mode = "informatica";
     configureInformaticaChrome();
     try {
+      const sessRes = await apiFetch("/api/session");
+      if (sessRes.ok) {
+        const sess = await sessRes.json().catch(() => ({}));
+        if (sess.role === "visitor") {
+          enterVisitorMode();
+          return;
+        }
+        if (sess.role !== "guest") {
+          clearSessionToken();
+          showLoginView();
+          return;
+        }
+      }
+
       const meRes = await apiFetch("/api/me");
-      if (meRes.status === 401) {
+      if (meRes.status === 401 || meRes.status === 403) {
         clearSessionToken();
         showLoginView();
         return;

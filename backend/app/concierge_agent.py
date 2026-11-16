@@ -88,27 +88,73 @@ def _build_unknown_profile(rcyc_id: str) -> GuestProfile:
     )
 
 
+SEASON_ALIASES: dict[str, list[str]] = {
+    "Spring": ["spring", "cherry blossom", "april", "may"],
+    "Summer": ["summer", "june", "july", "august", "midnight sun"],
+    "Autumn": ["autumn", "fall", "september", "october", "november"],
+    "Winter": ["winter", "december", "january", "february", "march"],
+}
+
+VISITOR_CLARIFY_MARKER = "could you share up to two details?"
+
+
 def _build_suggested_replies(
     intent: str,
     recommendations: list[VoyageRecommendation],
     referenced_voyages: list[Voyage],
     escalation: EscalationInfo,
     user_message: str,
+    visitor_mode: bool = False,
 ) -> list[str]:
     if escalation.escalated or intent == "refuse_other_guest":
         return []
+    if visitor_mode:
+        if recommendations:
+            return [
+                f"Tell me more about {recommendations[0].voyage.voyage_name}",
+                "Voyage Collection",
+                "Sign in for personal help",
+            ]
+        if intent == "voyage_detail" and referenced_voyages:
+            return [
+                "Voyage Collection",
+                "Experience Ambassador",
+                "Sign in for personal help",
+            ]
+        if referenced_voyages:
+            return [
+                "Dining options",
+                "Voyage Collection",
+                "Sign in for personal help",
+            ]
+        return [
+            "Voyage Collection",
+            "Experience Ambassador",
+            "Sign in for personal help",
+        ]
     lowered = user_message.lower()
-    if intent == "booking_inquiry" or any(kw in lowered for kw in ["booking", "reservation", "sailing"]):
+    if intent == "booking_inquiry":
         return ["Best voyage for me", "Dining options", "Speak to an Ambassador"]
-    if recommendations or referenced_voyages or intent in {"recommendation", "different_region", "voyage_detail", "region_catalog"}:
-        names = [r.voyage.voyage_name for r in recommendations[:2]] + [v.voyage_name for v in referenced_voyages[:2]]
-        unique_names = list(dict.fromkeys(names))[:2]
-        if unique_names:
-            return unique_names + ["Speak to an Ambassador"]
-    if any(kw in lowered for kw in ["dining", "spa", "wellness", "excursion", "shore", "food"]):
-        return ["Best voyage for me", "Something different", "Speak to an Ambassador"]
-    if intent in {"greeting", "thanks"}:
-        return ["Best voyage for me", "Dining options", "Speak to an Ambassador"]
+    if intent == "dietary" or any(
+        kw in lowered
+        for kw in [
+            "dining",
+            "culinary",
+            "restaurant",
+            "food",
+            "spa",
+            "wellness",
+            "excursion",
+            "shore",
+        ]
+    ):
+        return ["Best voyage for me", "Something different"]
+    if recommendations:
+        return [
+            f"Tell me more about {recommendations[0].voyage.voyage_name}",
+            "Show a different region",
+            "Spa & wellness",
+        ]
     return ["Best voyage for me", "My bookings", "Speak to an Ambassador"]
 
 
@@ -134,7 +180,112 @@ class ConciergeAgent:
                 return v
         return None
 
-    def _is_other_guest_request(self, message: str, active_profile: GuestProfile) -> bool:
+    def _detect_seasons(self, text: str) -> list[str]:
+        lowered = text.lower()
+        return [
+            season
+            for season, kws in SEASON_ALIASES.items()
+            if any(re.search(rf"\b{re.escape(kw)}\b", lowered) for kw in kws)
+        ]
+
+    def _extract_visitor_preferences(
+        self, request: ChatRequest
+    ) -> tuple[list[str], list[str], list[str]]:
+        """Extract regions, seasons, and interests ONLY from visitor user turns in this conversation."""
+        user_texts = [t.content for t in request.history if t.role == "user" and t.content]
+        user_texts.append(request.message)
+        combined = "\n".join(user_texts)
+
+        regions: list[str] = []
+        for txt in reversed(user_texts):
+            for region in self._detect_destinations(txt):
+                if region not in regions:
+                    regions.append(region)
+
+        seasons: list[str] = []
+        for txt in reversed(user_texts):
+            for season in self._detect_seasons(txt):
+                if season not in seasons:
+                    seasons.append(season)
+
+        focuses = detect_query_focus(combined)
+        lowered_combined = combined.lower()
+        extra_focus_map = {
+            "culinary": ["dining", "culinary", "food", "restaurant", "cuisine"],
+            "wellness": ["spa", "wellness", "relax", "relaxation"],
+            "adventure": ["excursion", "excursions", "shore", "adventure", "outdoor", "active"],
+            "cultural": ["culture", "cultural", "art", "history", "museum", "heritage"],
+        }
+        for focus, kws in extra_focus_map.items():
+            if focus not in focuses and any(kw in lowered_combined for kw in kws):
+                focuses.append(focus)
+
+        return regions, seasons, focuses
+
+    def _recommend_for_visitor(
+        self,
+        *,
+        voyages: list[Voyage],
+        regions: list[str],
+        seasons: list[str],
+        focuses: list[str],
+        top_k: int = 3,
+    ) -> list[VoyageRecommendation]:
+        region_set = {r.lower() for r in regions}
+        season_set = {s.lower() for s in seasons}
+        focus_set = {f.lower() for f in focuses}
+
+        candidates = list(voyages)
+        if region_set:
+            matched_region = [v for v in candidates if v.destination.lower() in region_set]
+            if matched_region:
+                candidates = matched_region
+        if season_set:
+            matched_season = [
+                v for v in candidates if any(s in v.season.lower() for s in season_set)
+            ]
+            if matched_season:
+                candidates = matched_season
+        if focus_set:
+            matched_focus = [
+                v for v in candidates if any(f in [pf.lower() for pf in v.primary_focus] for f in focus_set)
+            ]
+            if matched_focus:
+                candidates = matched_focus
+
+        scored: list[VoyageRecommendation] = []
+        for v in candidates:
+            score = 0
+            reasons: list[str] = []
+            if region_set and v.destination.lower() in region_set:
+                score += 30
+                reasons.append(f"Matches your {v.destination} preference from this conversation.")
+            if season_set and any(s in v.season.lower() for s in season_set):
+                score += 25
+                reasons.append(f"Sails in {v.season}.")
+            focus_hits = [f for f in focuses if f.lower() in [pf.lower() for pf in v.primary_focus]]
+            if focus_hits:
+                score += 25
+                reasons.append(f"Features {', '.join(focus_hits)} experiences aboard {v.yacht_name}.")
+            if not reasons:
+                reasons.append(f"{v.duration} nights in {v.destination} aboard {v.yacht_name} ({v.season}).")
+            scored.append(
+                VoyageRecommendation(
+                    voyage=v,
+                    score=score,
+                    match_reasons=reasons,
+                    score_breakdown={},
+                )
+            )
+        scored.sort(key=lambda r: (-r.score, r.voyage.price))
+        return scored[:top_k]
+
+    def _is_other_guest_request(
+        self,
+        message: str,
+        active_profile: GuestProfile,
+        visitor_mode: bool = False,
+    ) -> bool:
         lowered = message.lower()
         if any(
             phrase in lowered
@@ -158,7 +309,15 @@ class ConciergeAgent:
             if num != active_profile.rcyc_id:
                 return True
 
-        # Check if user asks about another sample guest by name
+        if visitor_mode and any(
+            kw in lowered for kw in ["booking", "bookings", "reservation", "reservations", "profile", "account", "booked"]
+        ):
+            if re.search(r"\b[A-Z][a-z]{1,20}\s+[A-Z][a-z]{1,20}'s\b", message) or re.search(
+                r"\b(?:about|for|check|is)\s+[A-Z][a-z]{1,20}\s+[A-Z][a-z]{1,20}\b", message
+            ):
+                return True
+
+        # Check if user asks about another sample guest by name (local sample list only in mock mode)
         sample_guests = self.data_provider.listSampleGuests()
         for g in sample_guests:
             if g.rcyc_id.upper() == active_profile.rcyc_id.upper():
@@ -189,34 +348,40 @@ class ConciergeAgent:
         self,
         request: ChatRequest,
         session_customer_id: str | None = None,
+        visitor_mode: bool = False,
     ) -> ChatResponse:
         is_infa_provider = isinstance(self.data_provider, InformaticaProvider)
-        if session_customer_id is not None:
-            requested_id = session_customer_id.strip()
-        else:
-            requested_id = (request.rcyc_id or "ANONYMOUS").strip()
-            if not is_infa_provider:
-                requested_id = requested_id.upper()
-        profile = self.data_provider.getProfile(requested_id)
-
-        if profile is None:
-            profile = _build_unknown_profile(requested_id)
+        if visitor_mode:
+            profile = build_anonymous_profile()
             guest_recognized = False
             bookings: list[Booking] = []
-        elif profile.guest_status == "anonymous":
-            guest_recognized = False
-            bookings = []
         else:
-            guest_recognized = True
-            bookings = self.data_provider.getBookings(profile.rcyc_id)
+            if session_customer_id is not None:
+                requested_id = session_customer_id.strip()
+            else:
+                requested_id = (request.rcyc_id or "ANONYMOUS").strip()
+                if not is_infa_provider:
+                    requested_id = requested_id.upper()
+            profile = self.data_provider.getProfile(requested_id)
 
-        consent_applied = bool(guest_recognized and profile.personalization_consent)
-        allow_booking_records = bool(consent_applied or (guest_recognized and is_infa_provider))
+            if profile is None:
+                profile = _build_unknown_profile(requested_id)
+                guest_recognized = False
+                bookings = []
+            elif profile.guest_status == "anonymous":
+                guest_recognized = False
+                bookings = []
+            else:
+                guest_recognized = True
+                bookings = self.data_provider.getBookings(profile.rcyc_id)
+
+        consent_applied = bool((not visitor_mode) and guest_recognized and profile.personalization_consent)
+        allow_booking_records = bool((not visitor_mode) and (consent_applied or (guest_recognized and is_infa_provider)))
         used_fields: list[str] = []
         lowered = request.message.lower().strip()
 
         # 1. Cross-guest privacy refusal (strictly before anything else)
-        if self._is_other_guest_request(request.message, profile):
+        if self._is_other_guest_request(request.message, profile, visitor_mode=visitor_mode):
             reply, provider_used, fallback = self.llm_engine.generate_reply(
                 profile=profile,
                 bookings=[],
@@ -226,6 +391,7 @@ class ConciergeAgent:
                 referenced_voyages=[],
                 escalation=EscalationInfo(escalated=False),
                 user_message=request.message,
+                visitor_mode=visitor_mode,
             )
             return ChatResponse(
                 reply=reply,
@@ -256,7 +422,9 @@ class ConciergeAgent:
                 referenced_voyages=[],
                 escalation=EscalationInfo(escalated=False),
                 user_message=request.message,
+                visitor_mode=visitor_mode,
             )
+            sugs = _build_suggested_replies(intent, [], [], EscalationInfo(escalated=False), request.message, visitor_mode=visitor_mode)
             return ChatResponse(
                 reply=reply,
                 guest_profile=to_public_profile(profile),
@@ -267,6 +435,7 @@ class ConciergeAgent:
                 used_profile_fields=used_fields,
                 recommendations=[],
                 referenced_voyages=[],
+                suggested_replies=sugs,
                 escalation=EscalationInfo(escalated=False),
                 llm_provider_used=provider_used,
                 llm_fallback_triggered=fallback,
@@ -288,6 +457,7 @@ class ConciergeAgent:
                 referenced_voyages=[],
                 escalation=escalation,
                 user_message=request.message,
+                visitor_mode=visitor_mode,
             )
             return ChatResponse(
                 reply=reply,
@@ -316,7 +486,9 @@ class ConciergeAgent:
                 referenced_voyages=[],
                 escalation=EscalationInfo(escalated=False),
                 user_message=request.message,
+                visitor_mode=visitor_mode,
             )
+            sugs = _build_suggested_replies(local_intent, [], [], EscalationInfo(escalated=False), request.message, visitor_mode=visitor_mode)
             return ChatResponse(
                 reply=reply,
                 guest_profile=to_public_profile(profile),
@@ -327,6 +499,7 @@ class ConciergeAgent:
                 used_profile_fields=list(dict.fromkeys(used_fields)),
                 recommendations=[],
                 referenced_voyages=[],
+                suggested_replies=sugs,
                 escalation=EscalationInfo(escalated=False),
                 llm_provider_used=provider_used,
                 llm_fallback_triggered=fallback,
@@ -345,7 +518,7 @@ class ConciergeAgent:
                 "contact info",
             ]
         )
-        if asks_contact:
+        if asks_contact and not visitor_mode:
             masked_contact = self.data_provider.getMaskedContactInfo(profile.rcyc_id) if guest_recognized else {"email": None, "phone": None}
             reply, provider_used, fallback = self.llm_engine.generate_reply(
                 profile=profile,
@@ -358,6 +531,7 @@ class ConciergeAgent:
                 user_message=request.message,
                 masked_contact=masked_contact,
             )
+            sugs = _build_suggested_replies("contact_inquiry", [], [], EscalationInfo(escalated=False), request.message)
             return ChatResponse(
                 reply=reply,
                 guest_profile=to_public_profile(profile),
@@ -368,12 +542,13 @@ class ConciergeAgent:
                 used_profile_fields=list(dict.fromkeys(used_fields)),
                 recommendations=[],
                 referenced_voyages=[],
+                suggested_replies=sugs,
                 escalation=EscalationInfo(escalated=False),
                 llm_provider_used=provider_used,
                 llm_fallback_triggered=fallback,
             )
 
-        # 4. Booking & Past Voyage Questions
+        # 4. Booking & Past Voyage Questions (and Visitor personal-info gating)
         all_voyages = self.data_provider.listVoyages()
         explicit_voyage = self._detect_voyage_in_text(request.message, all_voyages)
         has_catalog_framing = explicit_voyage is not None or any(
@@ -382,6 +557,7 @@ class ConciergeAgent:
                 "suite options",
                 "suites available",
                 "available suites",
+                "what suites",
                 "catalog",
                 "collection",
                 "recommend",
@@ -420,6 +596,59 @@ class ConciergeAgent:
             )
             or asks_booking_detail_nouns
         )
+
+        if visitor_mode and (
+            asks_booking
+            or asks_contact
+            or any(
+                kw in lowered
+                for kw in [
+                    "my profile",
+                    "my details",
+                    "my loyalty",
+                    "loyalty tier",
+                    "am i vip",
+                    "my account",
+                    "who am i",
+                    "what is my name",
+                    "my name",
+                    "my points",
+                    "sign in for personal help",
+                    "check my booking",
+                    "view my booking",
+                ]
+            )
+        ):
+            reply, provider_used, fallback = self.llm_engine.generate_reply(
+                profile=profile,
+                bookings=[],
+                intent="visitor_signin_required",
+                consent_applied=False,
+                recommendations=[],
+                referenced_voyages=[],
+                escalation=EscalationInfo(escalated=False),
+                user_message=request.message,
+                visitor_mode=True,
+            )
+            sugs = _build_suggested_replies(
+                "visitor_signin_required", [], [], EscalationInfo(escalated=False), request.message, visitor_mode=True
+            )
+            return ChatResponse(
+                reply=reply,
+                guest_profile=to_public_profile(profile),
+                bookings=[],
+                guest_recognized=False,
+                guest_status=profile.guest_status,
+                consent_applied=False,
+                used_profile_fields=[],
+                recommendations=[],
+                referenced_voyages=[],
+                suggested_replies=sugs,
+                escalation=EscalationInfo(escalated=False),
+                llm_provider_used=provider_used,
+                llm_fallback_triggered=fallback,
+            )
+
         if asks_booking:
             missing_fact = ""
             if allow_booking_records:
@@ -449,6 +678,7 @@ class ConciergeAgent:
                 user_message=request.message,
                 missing_booking_fact=missing_fact,
             )
+            sugs = _build_suggested_replies("booking_inquiry", [], [], EscalationInfo(escalated=False), request.message)
             return ChatResponse(
                 reply=reply,
                 guest_profile=to_public_profile(profile),
@@ -459,6 +689,7 @@ class ConciergeAgent:
                 used_profile_fields=list(dict.fromkeys(used_fields)),
                 recommendations=[],
                 referenced_voyages=[],
+                suggested_replies=sugs,
                 escalation=EscalationInfo(escalated=False),
                 llm_provider_used=provider_used,
                 llm_fallback_triggered=fallback,
@@ -472,27 +703,63 @@ class ConciergeAgent:
             kw in lowered
             for kw in [
                 "best voyage for me",
+                "best voyage",
                 "suggest",
                 "recommend",
                 "dining options",
                 "shore excursions",
                 "spa & wellness",
                 "something different",
+                "different region",
+            ]
+        )
+        asks_best_voyage = any(
+            kw in lowered
+            for kw in [
+                "best voyage",
+                "which voyage",
+                "pick a voyage",
+                "help me choose",
+                "recommend a voyage",
+                "suggest a voyage",
             ]
         )
         asks_highlights = any(
             kw in lowered for kw in ["highlight", "itinerary", "ports", "this voyage", "this itinerary", "tell me more"]
         )
         asks_different = any(
-            kw in lowered for kw in ["something different", "different from my previous", "new region", "unlike my last"]
+            kw in lowered
+            for kw in [
+                "something different",
+                "different region",
+                "different from my previous",
+                "new region",
+                "unlike my last",
+            ]
         )
         asks_region_catalog = bool(detected_regions) and any(
             kw in lowered for kw in ["price", "cost", "how much", "available", "which ", "voyages", "mediterranean", "alaska", "caribbean", "asia", "antarctica", "northern europe"]
         )
+        asks_suite_catalog = (
+            bool(re.search(r"\b(suite|suites|penthouse|terrace suite|owner's suite|grand suite|view suite|signature suite)\b", lowered))
+            and explicit_voyage is None
+            and not detected_regions
+        )
+        asks_collection_overview = any(
+            kw in lowered for kw in ["voyage collection", "browse catalog", "all voyages", "full collection"]
+        ) and not detected_regions and not detected_focuses
 
         intent = "general"
         recommendations: list[VoyageRecommendation] = []
         referenced_voyages: list[Voyage] = []
+
+        visitor_clarified_in_history = visitor_mode and any(
+            t.role == "assistant" and VISITOR_CLARIFY_MARKER in (t.content or "").lower()
+            for t in request.history
+        )
+        visitor_regions, visitor_seasons, visitor_focuses = (
+            self._extract_visitor_preferences(request) if visitor_mode else ([], [], [])
+        )
 
         if explicit_voyage is not None:
             intent = "voyage_detail"
@@ -502,6 +769,30 @@ class ConciergeAgent:
             if ctx_voyage is not None:
                 intent = "voyage_detail"
                 referenced_voyages = [ctx_voyage]
+        elif visitor_mode and (asks_best_voyage or (visitor_clarified_in_history and not asks_suite_catalog and not asks_collection_overview)):
+            if not visitor_regions and not visitor_seasons and not visitor_focuses and not visitor_clarified_in_history:
+                intent = "visitor_clarify"
+            else:
+                intent = "recommendation"
+                recommendations = self._recommend_for_visitor(
+                    voyages=all_voyages,
+                    regions=visitor_regions,
+                    seasons=visitor_seasons,
+                    focuses=visitor_focuses,
+                    top_k=3,
+                )
+        elif asks_collection_overview:
+            intent = "catalog_overview"
+            seen_dest: set[str] = set()
+            for v in all_voyages:
+                if v.destination not in seen_dest:
+                    seen_dest.add(v.destination)
+                    referenced_voyages.append(v)
+                if len(referenced_voyages) >= 3:
+                    break
+        elif asks_suite_catalog:
+            intent = "suite_catalog"
+            referenced_voyages = all_voyages[:3]
         elif asks_different:
             intent = "different_region"
             recommendations, rec_fields, consent_applied = recommend_voyages(
@@ -542,6 +833,7 @@ class ConciergeAgent:
             escalation=EscalationInfo(escalated=False),
             user_message=request.message,
             used_profile_fields=used_fields,
+            visitor_mode=visitor_mode,
         )
 
         logger.info(
@@ -554,7 +846,9 @@ class ConciergeAgent:
             len(referenced_voyages),
         )
 
-        sugs = _build_suggested_replies(intent, recommendations, referenced_voyages, EscalationInfo(escalated=False), request.message)
+        sugs = _build_suggested_replies(
+            intent, recommendations, referenced_voyages, EscalationInfo(escalated=False), request.message, visitor_mode=visitor_mode
+        )
         return ChatResponse(
             reply=reply,
             guest_profile=to_public_profile(profile),

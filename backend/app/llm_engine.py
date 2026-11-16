@@ -23,6 +23,10 @@ RULE_ONLY_INTENTS = {
     "refuse_other_guest",
     "contact_inquiry",
     "booking_inquiry",
+    "visitor_signin_required",
+    "visitor_clarify",
+    "suite_catalog",
+    "catalog_overview",
     "escalation",
     "complaint",
     "refund",
@@ -146,9 +150,10 @@ def build_rule_based_reply(
     missing_booking_fact: str = "",
     used_profile_fields: list[str] | None = None,
     masked_contact: dict[str, str | None] | None = None,
+    visitor_mode: bool = False,
 ) -> str:
     """Deterministic, warm MARIS response strictly grounded in catalog and profile records."""
-    known_guest = profile.guest_status in {"returning", "new"}
+    known_guest = (not visitor_mode) and profile.guest_status in {"returning", "new"}
     salutation_name = f", {profile.first_name}" if known_guest and profile.first_name else ""
 
     if intent == "refuse_other_guest":
@@ -157,7 +162,28 @@ def build_rule_based_reply(
             "and cannot share details or bookings for another guest."
         )
 
+    if intent == "visitor_signin_required":
+        return (
+            "Bookings, personal profile details, and personalized account recommendations require signing in with your Customer ID. "
+            "While browsing as a guest, you can explore our **Voyage Collection**, ask about regions, suites, dining, spa & wellness, or shore excursions, "
+            "speak with an **Experience Ambassador**, or **sign in** from the top menu for bookings and personalized help."
+        )
+
+    if intent == "visitor_clarify":
+        return (
+            "I would be glad to recommend voyages from our collection based on what you are looking for. Could you share up to two details?\n\n"
+            "- **Preferred region or season** (for example, Mediterranean, Caribbean, Alaska, Northern Europe, Asia, or Antarctica — or Spring, Summer, Autumn, or Winter)\n"
+            "- **Your interests** (such as culinary & dining, spa & wellness, shore excursions & adventure, or cultural exploration)\n\n"
+            "You can also browse the **Voyage Collection**, speak with an **Experience Ambassador**, or **sign in** for bookings and personalized recommendations."
+        )
+
     if intent == "greeting":
+        if visitor_mode:
+            return (
+                "Hello and welcome to The Ritz-Carlton Yacht Collection! "
+                "I can help you explore our **Voyage Collection**, regions, suites, dining, spa & wellness, and shore excursions, "
+                "connect you with an **Experience Ambassador**, or you may **sign in** for bookings and personalized recommendations."
+            )
         if known_guest:
             return (
                 f"Hello{salutation_name}! Welcome to The Ritz-Carlton Yacht Collection. "
@@ -169,6 +195,11 @@ def build_rule_based_reply(
         )
 
     if intent == "thanks":
+        if visitor_mode:
+            return (
+                "You are most welcome. Feel free to explore our **Voyage Collection**, ask about another destination or onboard experience, "
+                "speak with an **Experience Ambassador**, or **sign in** anytime for bookings and personalized assistance."
+            )
         return (
             f"You are most welcome{salutation_name}. Please let me know whenever I may assist you further "
             "with your yachting plans."
@@ -355,8 +386,42 @@ def build_rule_based_reply(
             + "\n\nIf you need details not shown here, I can gladly connect you with an Experience Ambassador."
         )
 
+    if intent == "suite_catalog":
+        suite_examples = []
+        for v in referenced_voyages[:3]:
+            suite_examples.append(
+                f"- **{v.voyage_name}** (`{v.voyage_id}`, {v.yacht_name}): {v.suite_availability}"
+            )
+        examples_block = ("\n\n" + "\n".join(suite_examples)) if suite_examples else ""
+        return (
+            "Across our fleet (*Evrima*, *Ilma*, and *Luminara*), our catalog offers **Terrace Suite**, **Signature Suite**, "
+            "**Grand Suite**, **View Suite**, and **Owner's Suite** accommodations (availability varies by sailing)."
+            f"{examples_block}\n\n"
+            "You can browse the **Voyage Collection** for suite details by itinerary, speak with an **Experience Ambassador** "
+            "for live availability, or **sign in** for bookings and personalized help."
+        )
+
+    if intent == "catalog_overview":
+        lines = [
+            f"- **{v.voyage_name}** (`{v.voyage_id}`, {v.destination}) — {v.duration} nights · {v.season} · From **{_format_currency(v.price)}** per guest"
+            for v in referenced_voyages
+        ]
+        highlights_block = ("\n\n" + "\n".join(lines)) if lines else ""
+        return (
+            "Our **Voyage Collection** features 12 curated sailings across the **Mediterranean**, **Caribbean**, **Alaska**, "
+            "**Northern Europe**, **Asia**, and **Antarctica** aboard *Evrima*, *Ilma*, and *Luminara*."
+            f"{highlights_block}\n\n"
+            "You can open **Voyage Collection** in the header to browse every itinerary, ask about a specific region or experience, "
+            "speak with an **Experience Ambassador**, or **sign in** for bookings and personalized help."
+        )
+
     if intent == "voyage_detail" and referenced_voyages:
         v = referenced_voyages[0]
+        visitor_footer = (
+            "\n\nYou can also browse our **Voyage Collection**, speak with an **Experience Ambassador**, or **sign in** for bookings and personalized help."
+            if visitor_mode
+            else ""
+        )
         return (
             f"Here are the catalog details for **{v.voyage_name}** (`{v.voyage_id}`) aboard {v.yacht_name}:\n\n"
             f"- **Region & Season:** {v.destination} · {v.season} · {v.duration} nights · From {_format_currency(v.price)} per guest\n"
@@ -365,6 +430,7 @@ def build_rule_based_reply(
             f"- **Culinary:** {v.culinary_experiences}\n"
             f"- **Wellness:** {v.wellness_experiences}\n"
             f"- **Suites Available:** {v.suite_availability}"
+            f"{visitor_footer}"
         )
 
     if intent == "region_catalog" and referenced_voyages:
@@ -378,13 +444,21 @@ def build_rule_based_reply(
             if known_guest and not consent_applied
             else ""
         )
+        visitor_footer = (
+            "\n\nYou can browse the full **Voyage Collection**, speak with an **Experience Ambassador**, or **sign in** for personalized assistance."
+            if visitor_mode
+            else ""
+        )
         return (
             f"{consent_note}We currently offer **{len(referenced_voyages)}** {region_name} voyage{'s' if len(referenced_voyages) != 1 else ''}:\n\n"
             + "\n".join(lines)
+            + visitor_footer
         )
 
     if recommendations:
-        if known_guest and not consent_applied:
+        if visitor_mode:
+            intro = "Based on what you shared in this conversation, here are catalog voyages that match your interests:\n\n"
+        elif known_guest and not consent_applied:
             intro = (
                 "Personalization is currently off on your profile, so I am sharing general voyage options from our catalog without using your personal history:\n\n"
             )
@@ -417,9 +491,21 @@ def build_rule_based_reply(
                 f"From **{_format_currency(v.price)}** ({v.yacht_name}, {v.season})\n"
                 f"   {reason_summary}"
             )
-        return intro + "\n".join(rec_lines)
+        visitor_footer = (
+            "\n\nYou can also browse our **Voyage Collection**, speak with an **Experience Ambassador**, or **sign in** for bookings and personalized help."
+            if visitor_mode
+            else ""
+        )
+        return intro + "\n".join(rec_lines) + visitor_footer
 
     # Concise general inquiry without unsolicited recommendations
+    if visitor_mode:
+        return (
+            "I would be glad to help you explore our **Voyage Collection** across the Mediterranean, Caribbean, Alaska, "
+            "Northern Europe, Asia, and Antarctica—including suites, dining, spa & wellness, and shore excursions. "
+            "You can also speak with an **Experience Ambassador** or **sign in** for bookings and personalized assistance."
+        )
+
     if profile.guest_status == "unknown":
         return (
             "I could not verify that ID in our sample directory. You may select a sample guest from Demo mode or ask about our destinations and voyages."
@@ -465,6 +551,7 @@ class PluggableLLMEngine:
         missing_booking_fact: str = "",
         used_profile_fields: list[str] | None = None,
         masked_contact: dict[str, str | None] | None = None,
+        visitor_mode: bool = False,
     ) -> tuple[str, str, bool]:
         """Generate grounded response. Falls back silently to rule_based on any failure."""
         rule_reply = build_rule_based_reply(
@@ -479,10 +566,11 @@ class PluggableLLMEngine:
             missing_booking_fact=missing_booking_fact,
             used_profile_fields=used_profile_fields,
             masked_contact=masked_contact,
+            visitor_mode=visitor_mode,
         )
 
         # Deterministic safety, privacy, booking, contact, complaint, refund, medical,
-        # dietary, accessibility, and escalation turns NEVER call Gemini.
+        # dietary, accessibility, visitor clarifying/sign-in, and escalation turns NEVER call Gemini.
         if escalation.escalated or intent in RULE_ONLY_INTENTS:
             return rule_reply, "rule_based", False
 
@@ -504,13 +592,13 @@ class PluggableLLMEngine:
                 text = self._call_gemini(facts)
                 if text:
                     text = _clean_catalog_reply(text)
-                    if profile.guest_status in {"returning", "new"} and not consent_applied:
+                    if (not visitor_mode) and profile.guest_status in {"returning", "new"} and not consent_applied:
                         if "personalization is currently off" not in text.lower():
                             text = (
                                 "Personalization is currently off on your profile, so I am sharing general voyage options from our catalog without using your personal history:\n\n"
                                 + text
                             )
-                    elif consent_applied and recommendations:
+                    elif (not visitor_mode) and consent_applied and recommendations:
                         labels = [_USED_FIELD_LABELS[f] for f in (used_profile_fields or []) if f in _USED_FIELD_LABELS]
                         if labels:
                             text += f"\n\nPersonalized using your {', '.join(labels)}."

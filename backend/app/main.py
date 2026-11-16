@@ -26,6 +26,7 @@ from backend.app.data_provider import (
     InformaticaProvider,
     MultipleCustomerMatches,
     ProfileSourceUnavailable,
+    build_anonymous_profile,
     create_data_provider,
     mask_email,
     mask_phone,
@@ -48,6 +49,9 @@ FRONTEND_DIR = BASE_DIR / "frontend"
 
 SESSION_COOKIE_NAME = "rcyc_session"
 SESSION_TTL_SECONDS = 24 * 60 * 60
+VISITOR_SESSION_TTL_SECONDS = 4 * 60 * 60
+VISITOR_CHAT_WINDOW_SECONDS = 10 * 60
+VISITOR_CHAT_MAX_MESSAGES = 20
 LOGIN_WINDOW_SECONDS = 10 * 60
 LOGIN_LOCK_SECONDS = 10 * 60
 MAX_LOGIN_FAILURES = 5
@@ -57,6 +61,7 @@ login_failures: dict[str, deque[float]] = defaultdict(deque)
 login_blocked_until: dict[str, float] = {}
 ip_login_failures: dict[str, deque[float]] = defaultdict(deque)
 ip_login_blocked_until: dict[str, float] = {}
+visitor_chat_timestamps: dict[str, deque[float]] = defaultdict(deque)
 revoked_session_tokens: dict[str, int] = {}
 
 data_provider = create_data_provider(settings)
@@ -130,7 +135,7 @@ def _sign_session(customer_id: str, secret_key: str) -> str:
         raise RuntimeError("SECRET_KEY is required for session signing")
     now = int(time.time())
     payload = json.dumps(
-        {"customer_id": customer_id, "iat": now, "exp": now + SESSION_TTL_SECONDS},
+        {"customer_id": customer_id, "role": "guest", "iat": now, "exp": now + SESSION_TTL_SECONDS},
         separators=(",", ":"),
         sort_keys=True,
     ).encode("utf-8")
@@ -139,7 +144,21 @@ def _sign_session(customer_id: str, secret_key: str) -> str:
     return f"{body}.{sig}"
 
 
-def _unsign_session(token: str | None, secret_key: str) -> str | None:
+def _sign_visitor_session(secret_key: str) -> str:
+    if not secret_key or secret_key == "replace-with-a-random-secret-key":
+        raise RuntimeError("SECRET_KEY is required for session signing")
+    now = int(time.time())
+    payload = json.dumps(
+        {"role": "visitor", "iat": now, "exp": now + VISITOR_SESSION_TTL_SECONDS},
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    body = _b64url_encode(payload)
+    sig = hmac.new(secret_key.encode("utf-8"), body.encode("ascii"), hashlib.sha256).hexdigest()
+    return f"{body}.{sig}"
+
+
+def _unsign_session_payload(token: str | None, secret_key: str) -> dict[str, Any] | None:
     if not token or "." not in token or not secret_key:
         return None
     body, _, sig = token.partition(".")
@@ -152,17 +171,28 @@ def _unsign_session(token: str | None, secret_key: str) -> str | None:
             return None
         if int(data.get("exp", 0)) < int(time.time()):
             return None
-        cid = str(data.get("customer_id") or "").strip()
-        return cid or None
+        return data
     except Exception:
         return None
 
 
-def _set_session_cookie_token(response: JSONResponse, token: str) -> None:
+def _unsign_session(token: str | None, secret_key: str) -> str | None:
+    data = _unsign_session_payload(token, secret_key)
+    if not data or data.get("role") == "visitor":
+        return None
+    cid = str(data.get("customer_id") or "").strip()
+    return cid or None
+
+
+def _set_session_cookie_token(
+    response: JSONResponse,
+    token: str,
+    max_age: int = SESSION_TTL_SECONDS,
+) -> None:
     response.set_cookie(
         key=SESSION_COOKIE_NAME,
         value=token,
-        max_age=SESSION_TTL_SECONDS,
+        max_age=max_age,
         httponly=True,
         samesite="none",
         secure=True,
@@ -210,20 +240,48 @@ def _is_token_revoked(token: str | None) -> bool:
     return True
 
 
-def _session_customer_id(request: Request, active_cfg: Settings) -> str | None:
+def _extract_raw_token(request: Request) -> str | None:
     auth_header = request.headers.get("authorization", "").strip()
     if auth_header:
         scheme, _, token = auth_header.partition(" ")
         clean_tok = token.strip()
         if scheme.lower() == "bearer" and clean_tok:
-            if _is_token_revoked(clean_tok):
-                return None
-            return _unsign_session(clean_tok, active_cfg.secret_key)
+            return clean_tok
         return None
-    cookie_tok = request.cookies.get(SESSION_COOKIE_NAME)
-    if _is_token_revoked(cookie_tok):
-        return None
-    return _unsign_session(cookie_tok, active_cfg.secret_key)
+    return request.cookies.get(SESSION_COOKIE_NAME)
+
+
+def _session_info(request: Request, active_cfg: Settings) -> tuple[str | None, str | None]:
+    raw_tok = _extract_raw_token(request)
+    if not raw_tok or _is_token_revoked(raw_tok):
+        return None, None
+    data = _unsign_session_payload(raw_tok, active_cfg.secret_key)
+    if not data:
+        return None, None
+    if data.get("role") == "visitor":
+        return "visitor", None
+    cid = str(data.get("customer_id") or "").strip()
+    if cid:
+        return "guest", cid
+    return None, None
+
+
+def _session_customer_id(request: Request, active_cfg: Settings) -> str | None:
+    role, cid = _session_info(request, active_cfg)
+    if role == "guest" and cid:
+        return cid
+    return None
+
+
+def _check_and_record_visitor_chat(client_ip: str, now: float) -> bool:
+    """Allow up to VISITOR_CHAT_MAX_MESSAGES per VISITOR_CHAT_WINDOW_SECONDS per IP."""
+    dq = visitor_chat_timestamps[client_ip]
+    while dq and now - dq[0] >= VISITOR_CHAT_WINDOW_SECONDS:
+        dq.popleft()
+    if len(dq) >= VISITOR_CHAT_MAX_MESSAGES:
+        return False
+    dq.append(now)
+    return True
 
 
 def verify_guest_credentials(
@@ -490,6 +548,40 @@ def login(request: Request, credentials: LoginRequest):
     return resp
 
 
+@app.post("/api/visitor")
+def start_visitor_session():
+    """Issue a signed 4-hour visitor session token with role 'visitor' and no customer_id."""
+    active_cfg = _active_settings()
+    if active_cfg.data_provider_mode != "informatica":
+        raise HTTPException(status_code=404, detail="Not found")
+    if not active_cfg.secret_key or active_cfg.secret_key == "replace-with-a-random-secret-key":
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "Visitor browsing service temporarily unavailable."},
+        )
+    token = _sign_visitor_session(active_cfg.secret_key)
+    resp = JSONResponse(
+        status_code=200,
+        content={"authenticated": False, "role": "visitor", "token": token},
+    )
+    _set_session_cookie_token(resp, token, max_age=VISITOR_SESSION_TTL_SECONDS)
+    return resp
+
+
+@app.get("/api/session")
+def session_status(request: Request) -> dict[str, Any]:
+    """Return local session role without calling Informatica."""
+    active_cfg = _active_settings()
+    if active_cfg.data_provider_mode != "informatica":
+        return {"authenticated": False, "role": None, "data_provider": active_cfg.data_provider_mode}
+    role, _ = _session_info(request, active_cfg)
+    return {
+        "authenticated": role == "guest",
+        "role": role,
+        "data_provider": "informatica",
+    }
+
+
 @app.post("/api/logout")
 def logout(request: Request):
     """Clear the signed session cookie and revoke the current token."""
@@ -511,8 +603,10 @@ def me(request: Request):
     if active_cfg.data_provider_mode != "informatica":
         raise HTTPException(status_code=404, detail="Not found")
 
-    customer_id = _session_customer_id(request, active_cfg)
-    if not customer_id:
+    role, customer_id = _session_info(request, active_cfg)
+    if role == "visitor":
+        raise HTTPException(status_code=403, detail="Sign in required to access profile or bookings.")
+    if role != "guest" or not customer_id:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
     provider = _active_provider()
@@ -542,16 +636,22 @@ def me(request: Request):
     result["customer_id"] = customer_id
 
     email_entries = attributes.get("email")
-    if isinstance(email_entries, list) and email_entries and isinstance(email_entries[0], dict):
-        masked_email = _mask_email(email_entries[0].get("email_address"))
-        if masked_email:
-            result["email"] = masked_email
+    if isinstance(email_entries, list):
+        for entry in email_entries:
+            if isinstance(entry, dict):
+                masked_email = _mask_email(entry.get("email_address"))
+                if masked_email:
+                    result["email"] = masked_email
+                    break
 
     phone_entries = attributes.get("phone")
-    if isinstance(phone_entries, list) and phone_entries and isinstance(phone_entries[0], dict):
-        masked_phone = _mask_phone(phone_entries[0])
-        if masked_phone:
-            result["phone"] = masked_phone
+    if isinstance(phone_entries, list):
+        for entry in phone_entries:
+            if isinstance(entry, dict):
+                masked_phone = _mask_phone(entry)
+                if masked_phone:
+                    result["phone"] = masked_phone
+                    break
 
     loyalty_tier = _usable_name(attributes.get("loyalty_tier"))
     if loyalty_tier:
@@ -693,8 +793,21 @@ def chat_endpoint(request: Request, payload: ChatRequest):
     active_cfg = _active_settings()
     agent = _active_agent()
     if active_cfg.data_provider_mode == "informatica":
-        customer_id = _session_customer_id(request, active_cfg)
-        if not customer_id:
+        role, customer_id = _session_info(request, active_cfg)
+        if role == "visitor":
+            client_ip = _client_ip(request)
+            if not _check_and_record_visitor_chat(client_ip, time.monotonic()):
+                return JSONResponse(
+                    status_code=429,
+                    content={
+                        "detail": (
+                            "You have reached the visitor chat limit of 20 messages per 10 minutes. "
+                            "Please wait a few minutes, or sign in for continued assistance from MARIS."
+                        )
+                    },
+                )
+            return agent.handle_chat(payload, session_customer_id=None, visitor_mode=True)
+        if role != "guest" or not customer_id:
             raise HTTPException(status_code=401, detail="Not authenticated")
         try:
             response = agent.handle_chat(payload, session_customer_id=customer_id)
@@ -715,8 +828,8 @@ def conversation_title_endpoint(request: Request, payload: ConversationTitleRequ
     """Generate a short 2-5 word conversation title from only the first guest message."""
     active_cfg = _active_settings()
     if active_cfg.data_provider_mode == "informatica":
-        customer_id = _session_customer_id(request, active_cfg)
-        if not customer_id:
+        role, customer_id = _session_info(request, active_cfg)
+        if role not in {"guest", "visitor"} or (role == "guest" and not customer_id):
             raise HTTPException(status_code=401, detail="Not authenticated")
 
     agent = _active_agent()
@@ -730,14 +843,17 @@ def escalate_endpoint(request: Request, payload: ChatRequest) -> EscalationInfo:
     active_cfg = _active_settings()
     provider = _active_provider()
     if active_cfg.data_provider_mode == "informatica":
-        customer_id = _session_customer_id(request, active_cfg)
-        if not customer_id:
-            raise HTTPException(status_code=401, detail="Not authenticated")
-        try:
-            profile = provider.getProfile(customer_id)
-        except ProfileSourceUnavailable:
-            raise HTTPException(status_code=503, detail="Guest profile service temporarily unavailable") from None
-        if profile is None:
+        role, customer_id = _session_info(request, active_cfg)
+        if role == "visitor":
+            profile = build_anonymous_profile()
+        elif role == "guest" and customer_id:
+            try:
+                profile = provider.getProfile(customer_id)
+            except ProfileSourceUnavailable:
+                raise HTTPException(status_code=503, detail="Guest profile service temporarily unavailable") from None
+            if profile is None:
+                raise HTTPException(status_code=401, detail="Not authenticated")
+        else:
             raise HTTPException(status_code=401, detail="Not authenticated")
     else:
         profile = provider.getProfile(payload.rcyc_id or "ANONYMOUS")
