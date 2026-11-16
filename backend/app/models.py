@@ -1,0 +1,225 @@
+"""Pydantic data models for MARIS RCYC Guest Concierge."""
+
+from __future__ import annotations
+
+from typing import Literal
+from pydantic import BaseModel, Field
+
+
+GuestRecognitionStatus = Literal["returning", "new", "anonymous", "unknown"]
+
+
+class Booking(BaseModel):
+    """Reservation record linked to a guest profile."""
+
+    booking_id: str
+    rcyc_id: str
+    voyage_id: str
+    voyage_name: str
+    destination: str
+    ship: str
+    suite_category: str
+    booked_on: str
+    sailing_dates: str | None = None
+    status_code: str = "C"
+    status_label: str = ""
+
+
+class GuestProfile(BaseModel):
+    """Unified guest profile returned by GuestDataProvider.getProfile()."""
+
+    rcyc_id: str
+    first_name: str
+    last_name: str
+    loyalty_tier: str
+    past_voyages: int = 0
+    previous_voyage_region: str = "None"
+    sailed_regions: list[str] = Field(default_factory=list)
+    preferred_suite: str = "Terrace Suite"
+    interest_focus: list[str] = Field(default_factory=list)
+    ancillary_purchase_preferences: list[str] = Field(default_factory=list)
+    preferred_destinations: list[str] = Field(default_factory=list)
+    dietary_requirements: str = "None"
+    accessibility_requirements: str = "None"
+    vip_status: bool = False
+    open_complaint_status: bool = False
+    complaint_summary: str = ""
+    personalization_consent: bool = True
+    consent_assumed: bool = False
+    profile_label: str = ""
+    guest_status: GuestRecognitionStatus = "returning"
+
+    @property
+    def full_name(self) -> str:
+        return f"{self.first_name} {self.last_name}".strip()
+
+
+class PublicGuestProfile(BaseModel):
+    """Minimized guest profile safe for browser responses (sensitive fields omitted)."""
+
+    rcyc_id: str
+    first_name: str
+    last_name: str
+    loyalty_tier: str
+    past_voyages: int = 0
+    previous_voyage_region: str = "None"
+    sailed_regions: list[str] = Field(default_factory=list)
+    preferred_suite: str = "Terrace Suite"
+    interest_focus: list[str] = Field(default_factory=list)
+    ancillary_purchase_preferences: list[str] = Field(default_factory=list)
+    preferred_destinations: list[str] = Field(default_factory=list)
+    open_complaint_status: bool = False
+    personalization_consent: bool = True
+    consent_assumed: bool = False
+    profile_label: str = ""
+    guest_status: GuestRecognitionStatus = "returning"
+
+    @property
+    def full_name(self) -> str:
+        return f"{self.first_name} {self.last_name}".strip()
+
+
+def to_public_profile(profile: GuestProfile) -> PublicGuestProfile:
+    """Strip server-only fields before returning guest profile to the browser."""
+    return PublicGuestProfile(
+        rcyc_id=profile.rcyc_id,
+        first_name=profile.first_name,
+        last_name=profile.last_name,
+        loyalty_tier=profile.loyalty_tier,
+        past_voyages=profile.past_voyages,
+        previous_voyage_region=profile.previous_voyage_region,
+        sailed_regions=list(profile.sailed_regions),
+        preferred_suite=profile.preferred_suite,
+        interest_focus=list(profile.interest_focus),
+        ancillary_purchase_preferences=list(profile.ancillary_purchase_preferences),
+        preferred_destinations=list(profile.preferred_destinations),
+        open_complaint_status=profile.open_complaint_status,
+        personalization_consent=profile.personalization_consent,
+        consent_assumed=profile.consent_assumed,
+        profile_label=profile.profile_label,
+        guest_status=profile.guest_status,
+    )
+
+
+class GuestSummary(BaseModel):
+    """Sample guest option for the demo picker."""
+
+    rcyc_id: str
+    full_name: str
+    loyalty_tier: str
+    past_voyages: int
+    open_complaint_status: bool
+    personalization_consent: bool
+    profile_label: str
+    guest_status: GuestRecognitionStatus
+
+
+class Voyage(BaseModel):
+    """RCYC Voyage catalog entry returned by GuestDataProvider.listVoyages()."""
+
+    voyage_id: str
+    voyage_name: str
+    destination: str
+    yacht_name: str
+    itinerary_ports: str
+    duration: int
+    price: int
+    season: str
+    highlights: str
+    culinary_experiences: str
+    wellness_experiences: str
+    adventure_experiences: str
+    cultural_experiences: str
+    suite_availability: str
+    primary_focus: list[str] = Field(default_factory=list)
+
+
+class VoyageRecommendation(BaseModel):
+    """Scored voyage recommendation with transparent weight breakdown (for Demo insights)."""
+
+    voyage: Voyage
+    score: int
+    match_reasons: list[str]
+    score_breakdown: dict[str, int] = Field(default_factory=dict)
+
+
+class EscalationContextPacket(BaseModel):
+    """Context passed to an Experience Ambassador during simulated handoff (sensitive notes kept server-side)."""
+
+    rcyc_id: str
+    guest_name: str
+    loyalty_tier: str
+    guest_status: str
+    user_message: str
+    conversation_context: list[dict[str, str]]
+    open_complaint_status: bool
+    timestamp: str
+
+
+class EscalationInfo(BaseModel):
+    """Structured escalation state returned with chat responses."""
+
+    escalated: bool = False
+    trigger_rules: list[str] = Field(default_factory=list)
+    reason: str = ""
+    handoff_note: str = ""
+    context_packet: EscalationContextPacket | None = Field(default=None, exclude=True)
+
+
+class ChatTurn(BaseModel):
+    """A single turn in conversation history."""
+
+    role: Literal["user", "assistant"]
+    content: str
+    voyage_ids: list[str] = Field(default_factory=list)
+
+
+class ChatRequest(BaseModel):
+    """Incoming chat message payload."""
+
+    rcyc_id: str | None = Field(
+        default=None,
+        description="Sample RCYC_ID or 'ANONYMOUS' / empty for visitor.",
+    )
+    message: str = Field(..., min_length=1, max_length=2000)
+    history: list[ChatTurn] = Field(default_factory=list)
+
+
+class GuestContextResponse(BaseModel):
+    """Profile + bookings bundle returned when selecting a sample guest."""
+
+    status: Literal["found", "not_found", "anonymous"]
+    profile: PublicGuestProfile | None = None
+    bookings: list[Booking] = Field(default_factory=list)
+    escalation: bool = False
+
+
+class ChatResponse(BaseModel):
+    """Structured response from MARIS Concierge."""
+
+    reply: str
+    guest_profile: PublicGuestProfile
+    bookings: list[Booking] = Field(default_factory=list)
+    guest_recognized: bool
+    guest_status: GuestRecognitionStatus
+    consent_applied: bool
+    used_profile_fields: list[str] = Field(default_factory=list)
+    recommendations: list[VoyageRecommendation] = Field(default_factory=list)
+    referenced_voyages: list[Voyage] = Field(default_factory=list)
+    suggested_replies: list[str] = Field(default_factory=list)
+    escalation: EscalationInfo = Field(default_factory=EscalationInfo)
+    llm_provider_used: str = "rule_based"
+    llm_fallback_triggered: bool = False
+
+
+class ConversationTitleRequest(BaseModel):
+    """Request payload containing only the first guest message for title generation."""
+
+    message: str = Field(..., min_length=1, max_length=2000)
+
+
+class ConversationTitleResponse(BaseModel):
+    """Short 2-5 word conversation title."""
+
+    title: str
+

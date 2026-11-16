@@ -1,0 +1,533 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MARIS · The Ritz-Carlton Yacht Collection Guest Concierge</title>
+  <meta name="description" content="MARIS Personal Yacht Concierge for The Ritz-Carlton Yacht Collection." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@500;600;700&family=JetBrains+Mono:wght@400;500&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+  <!-- Top Navy Header -->
+  <header class="topbar">
+    <div class="topbar-brand-group">
+      <button
+        type="button"
+        id="sidebarToggleBtn"
+        class="burger-btn hidden"
+        aria-label="Toggle conversation history"
+        aria-expanded="true"
+        aria-controls="historySidebar"
+      >
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <line x1="3" y1="6" x2="21" y2="6"/>
+          <line x1="3" y1="12" x2="21" y2="12"/>
+          <line x1="3" y1="18" x2="21" y2="18"/>
+        </svg>
+      </button>
+
+      <div class="rcyc-brand">
+        <img
+          src="/static/assets/rcyc-logo.png"
+          alt="The Ritz-Carlton Yacht Collection"
+          class="rcyc-logo rcyc-logo-header"
+        />
+      </div>
+
+      <span class="topbar-divider" aria-hidden="true"></span>
+
+      <div class="maris-brand">
+        <svg class="maris-sail-icon" viewBox="0 0 36 36" fill="none" aria-hidden="true">
+          <path d="M18 5L29 24H18V5Z" fill="#C9A255"/>
+          <path d="M16 9L8 24H16V9Z" fill="#C9A255" fill-opacity="0.82"/>
+          <path d="M5 26.5H31L27.5 30.5H8.5L5 26.5Z" fill="#C9A255"/>
+        </svg>
+        <div class="maris-brand-text">
+          <span class="maris-title">MARIS</span>
+          <span class="maris-subtitle">Your Personal Yacht Concierge</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="topbar-right">
+      <button type="button" id="catalogTriggerBtn" class="topbar-link-btn hidden">
+        Voyage Collection
+      </button>
+
+      <button
+        type="button"
+        id="demoInsightsToggleBtn"
+        class="topbar-link-btn hidden"
+        aria-expanded="false"
+        aria-controls="demoInsightsDrawer"
+      >
+        Demo insights
+      </button>
+
+      <div class="concierge-status" id="conciergeStatusIndicator">
+        <span class="status-dot" aria-hidden="true"></span>
+        <span id="conciergeStatusText">Concierge Online</span>
+      </div>
+
+      <span class="topbar-divider" aria-hidden="true"></span>
+
+      <div class="account-menu-wrap">
+        <button
+          type="button"
+          id="accountMenuBtn"
+          class="account-trigger hidden"
+          aria-expanded="false"
+          aria-haspopup="true"
+        >
+          <span id="headerGreeting">Welcome</span>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <polyline points="6 9 12 15 18 9"></polyline>
+          </svg>
+        </button>
+
+        <div id="accountPopover" class="account-popover hidden" role="menu">
+          <div id="guestPickerSection" class="popover-section">
+            <label for="guestSelect" class="popover-label">Demo mode: choose a sample guest</label>
+            <select id="guestSelect" class="popover-select" aria-label="Demo mode: choose a sample guest">
+              <option value="ANONYMOUS">Anonymous Visitor</option>
+            </select>
+          </div>
+          <div id="guestPickerDivider" class="popover-divider"></div>
+          <button type="button" id="popoverMyProfileBtn" class="popover-action-item" role="menuitem">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+            <span>Your details</span>
+          </button>
+          <button type="button" id="popoverDataPanelBtn" class="popover-action-item" role="menuitem">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/></svg>
+            <span>Data panel</span>
+          </button>
+          <button type="button" id="popoverSwitchAnonBtn" class="popover-action-item" role="menuitem">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+            <span>Browse as anonymous visitor</span>
+          </button>
+          <button type="button" id="popoverLogoutBtn" class="popover-action-item hidden" role="menuitem">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+            <span>Sign out</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <!-- Collapsible Demo Insights Drawer (Collapsed by default) -->
+  <section id="demoInsightsDrawer" class="demo-insights-bar hidden" aria-label="Demo insights">
+    <div class="demo-insights-inner">
+      <div class="demo-insights-head">
+        <div>
+          <span class="demo-insights-title">Demo insights</span>
+          <span class="demo-insights-sub">Internal diagnostics for demonstration only (hidden from guest chat)</span>
+        </div>
+        <button type="button" id="closeDemoInsightsBtn" class="demo-insights-close">Hide</button>
+      </div>
+      <div class="demo-insights-grid">
+        <div class="insight-box">
+          <span class="insight-label">Engine &amp; Consent State</span>
+          <p id="insightEngineText" class="insight-value">Awaiting inquiry…</p>
+        </div>
+        <div class="insight-box">
+          <span class="insight-label">Profile Context Used in Last Response</span>
+          <p id="usedFieldsList" class="insight-value mono">None</p>
+        </div>
+        <div class="insight-box insight-box-wide">
+          <span class="insight-label">Recommendation Score &amp; Weight Breakdown</span>
+          <div id="insightScoreBreakdown" class="insight-scores">No active scored recommendations.</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Informatica Guest Sign-In View (shown only when DATA_PROVIDER_MODE=informatica and unauthenticated) -->
+  <section id="infaLoginView" class="login-stage hidden" aria-label="Guest Sign In">
+    <div class="login-card">
+      <div class="login-card-head">
+        <img
+          src="/static/assets/rcyc-logo.png"
+          alt="The Ritz-Carlton Yacht Collection"
+          class="rcyc-logo rcyc-logo-login"
+        />
+        <div>
+          <h1 class="login-title">Guest Sign In</h1>
+          <p class="login-subtitle">Sign in to access MARIS, your personal yacht concierge.</p>
+        </div>
+      </div>
+      <div class="gold-hairline"></div>
+      <form id="infaLoginForm" class="login-form" autocomplete="off">
+        <div class="login-field">
+          <label for="loginCustomerId" class="login-label">Customer ID</label>
+          <input
+            id="loginCustomerId"
+            name="customer_id"
+            type="text"
+            inputmode="numeric"
+            class="login-input mono"
+            placeholder="Enter your Customer ID"
+            required
+          />
+        </div>
+        <div class="login-field">
+          <label for="loginPassword" class="login-label">Password</label>
+          <div class="login-password-wrap">
+            <input
+              id="loginPassword"
+              name="password"
+              type="password"
+              class="login-input login-password-input"
+              placeholder="Enter your password"
+              required
+            />
+            <button
+              type="button"
+              id="togglePasswordBtn"
+              class="password-toggle-btn"
+              aria-label="Show password"
+              aria-pressed="false"
+            >
+              Show
+            </button>
+          </div>
+        </div>
+        <div id="loginError" class="login-error hidden" role="alert"></div>
+        <button type="submit" id="loginSubmitBtn" class="login-submit-btn">Sign in</button>
+      </form>
+    </div>
+  </section>
+
+  <!-- Main Three-Column Workspace -->
+  <main id="workspaceMain" class="workspace hidden">
+    <!-- Left Column: Conversation History Sidebar (Collapsible drawer on mobile) -->
+    <div id="historyDrawerBackdrop" class="history-drawer-backdrop hidden" aria-hidden="true"></div>
+    <aside id="historySidebar" class="history-sidebar" aria-label="Conversation history">
+      <div class="history-sidebar-head">
+        <span class="history-sidebar-title">Conversations</span>
+        <button
+          type="button"
+          id="closeHistoryDrawerBtn"
+          class="history-close-btn"
+          aria-label="Close conversation history"
+        >
+          &times;
+        </button>
+      </div>
+      <button type="button" id="newConversationBtn" class="new-conv-btn">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        <span>New chat</span>
+      </button>
+      <div id="historyList" class="history-list" role="list"></div>
+    </aside>
+
+    <!-- Center Column: MARIS Concierge Chat -->
+    <section id="concierge" class="chat-card" aria-label="Concierge Chat">
+      <!-- Demo Mode Picker & Sample ID Strip -->
+      <div id="chatIdentityStrip" class="chat-identity-strip">
+        <div class="identity-strip-left">
+          <span class="today-pill">Today</span>
+          <label for="inlineGuestSelect" class="demo-picker-label">Demo mode: choose a sample guest</label>
+        </div>
+        <div class="identity-strip-controls">
+          <select id="inlineGuestSelect" class="inline-select" aria-label="Demo mode: choose a sample guest">
+            <option value="ANONYMOUS">Anonymous Visitor</option>
+          </select>
+          <form id="inlineLookupForm" class="inline-lookup" autocomplete="off">
+            <input
+              id="inlineRcycInput"
+              type="text"
+              class="inline-rcyc-input"
+              placeholder="Sample ID (e.g. RCYC-1001)"
+              aria-label="Enter sample guest ID"
+            />
+            <button type="submit" class="inline-verify-btn">Go</button>
+          </form>
+          <span id="idLookupFeedback" class="id-feedback hidden" role="status">ID not found</span>
+        </div>
+      </div>
+
+      <!-- Escalation Notification Banner -->
+      <div id="escalationBanner" class="escalation-banner hidden" role="status" aria-live="polite">
+        <div class="escalation-banner-top">
+          <div class="escalation-title-row">
+            <span class="escalation-badge">Escalated to an Experience Ambassador</span>
+          </div>
+          <button type="button" id="toggleContextPacketBtn" class="btn-link">View Handoff Context</button>
+        </div>
+        <p id="escalationReasonText" class="escalation-reason"></p>
+        <p id="escalationNoteText" class="escalation-sim-note"></p>
+        <pre id="escalationPacketPre" class="context-packet hidden"></pre>
+      </div>
+
+      <!-- Conversation Stream -->
+      <div id="chatMessages" class="chat-messages" aria-live="polite" aria-relevant="additions"></div>
+
+      <!-- Typing Indicator (Fixed-Height Reserved Slot) -->
+      <div id="typingIndicator" class="typing-indicator is-idle" aria-live="polite" aria-hidden="true">
+        <span class="typing-dots" aria-hidden="true"><span></span><span></span><span></span></span>
+        <span>MARIS is typing…</span>
+      </div>
+
+      <!-- Quick Prompt Chips (Preserved Design & Icons) -->
+      <div class="quick-prompts" aria-label="Suggested inquiries">
+        <button type="button" class="quick-pill" data-prompt="Suggest the best voyage for me.">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+          <span>Best voyage for me</span>
+        </button>
+        <button type="button" class="quick-pill" data-prompt="Show dining options voyages.">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 2v7c0 1.1.9 2 2 2h4a2 2 0 0 0 2-2V2"/><path d="M7 2v20"/><path d="M21 15V2v0a5 5 0 0 0-5 5v6c0 1.1.9 2 2 2h3Zm0 0v7"/></svg>
+          <span>Dining options</span>
+        </button>
+        <button type="button" class="quick-pill" data-prompt="Show shore excursions voyages.">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76"/></svg>
+          <span>Shore excursions</span>
+        </button>
+        <button type="button" class="quick-pill" data-prompt="Show spa & wellness voyages.">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+          <span>Spa &amp; wellness</span>
+        </button>
+        <button type="button" class="quick-pill" data-prompt="Show Mediterranean voyages.">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+          <span>Mediterranean</span>
+        </button>
+        <button type="button" class="quick-pill" data-prompt="Show me something different from my previous voyage.">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+          <span>Something different</span>
+        </button>
+        <button type="button" class="quick-pill" data-prompt="I want to speak with an Experience Ambassador.">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><polyline points="17 11 19 13 23 9"/></svg>
+          <span>Experience Ambassador</span>
+        </button>
+      </div>
+
+      <!-- Gold-Bordered Composer + Navy Send Button -->
+      <form id="chatForm" class="composer-bar" autocomplete="off">
+        <div class="composer-input-wrap">
+          <svg class="composer-sparkle" width="18" height="18" viewBox="0 0 24 24" fill="#C9A255" aria-hidden="true">
+            <path d="M12 2L14.3 9.7L22 12L14.3 14.3L12 22L9.7 14.3L2 12L9.7 9.7L12 2Z"/>
+          </svg>
+          <input
+            id="messageInput"
+            type="text"
+            class="composer-input"
+            placeholder="Ask MARIS about a voyage, dining, preferences, or onboard experience..."
+            aria-label="Ask MARIS"
+            required
+          />
+        </div>
+        <button type="submit" id="sendBtn" class="send-btn" aria-label="Send message">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <line x1="22" y1="2" x2="11" y2="13"></line>
+            <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+          </svg>
+        </button>
+      </form>
+    </section>
+  </main>
+
+  <!-- Right-side Data Panel Drawer -->
+  <div id="dataDrawerBackdrop" class="data-drawer-backdrop hidden" aria-hidden="true"></div>
+  <aside id="dataDrawer" class="right-drawer hidden" aria-label="Data panel">
+    <div class="right-drawer-head">
+      <div>
+        <p class="modal-eyebrow">Demo Data Panel</p>
+        <h2 class="modal-title">Informatica Guest 360</h2>
+        <span class="demo-insights-sub" style="margin-left:0;">Shows that answers come from Informatica</span>
+      </div>
+      <button type="button" id="closeDataDrawerBtn" class="modal-close-icon-btn" aria-label="Close Data panel">&times;</button>
+    </div>
+    <div class="right-drawer-body">
+      <div id="guest-profile-panel" class="sidebar-stack" aria-label="Your details">
+      <!-- Card 1: Guest Details -->
+      <section class="side-card">
+        <div class="side-card-head">
+          <span class="gold-circle-icon" aria-hidden="true">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+          </span>
+          <div class="side-card-title-wrap">
+            <h2 id="profileKicker" class="side-card-title">Visitor Details</h2>
+            <span id="vipBadge" class="vip-chip hidden">VIP</span>
+          </div>
+        </div>
+
+        <div class="guest-hero-row">
+          <div id="profileName" class="guest-hero-name">Anonymous Visitor</div>
+          <div id="profileStatusSubtitle" class="guest-hero-sub">Browsing without profile</div>
+        </div>
+
+        <div class="gold-hairline"></div>
+
+        <div id="consentOffNotice" class="consent-off-banner hidden">
+          Personalization is off
+        </div>
+
+        <div id="demoConsentNotice" class="demo-consent-notice hidden">
+          Demo: personalization consent assumed
+        </div>
+
+        <div class="detail-list">
+          <div class="detail-item">
+            <svg class="detail-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="M15 8h2M15 12h2M7 16h10"/></svg>
+            <div class="detail-copy">
+              <span id="profileIdLabel" class="detail-label">Guest ID</span>
+              <span id="profileRcycId" class="detail-value mono">ANONYMOUS</span>
+            </div>
+          </div>
+
+          <div class="detail-item hidden" id="rowInfaEmail">
+            <svg class="detail-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
+            <div class="detail-copy">
+              <span class="detail-label">Email</span>
+              <span id="attrInfaEmail" class="detail-value"></span>
+            </div>
+          </div>
+
+          <div class="detail-item hidden" id="rowInfaPhone">
+            <svg class="detail-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
+            <div class="detail-copy">
+              <span class="detail-label">Phone</span>
+              <span id="attrInfaPhone" class="detail-value"></span>
+            </div>
+          </div>
+
+          <div class="detail-item hidden" id="rowInfaLoyalty">
+            <svg class="detail-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+            <div class="detail-copy">
+              <span class="detail-label">Loyalty Tier</span>
+              <span id="attrInfaLoyalty" class="detail-value"></span>
+            </div>
+          </div>
+
+          <div class="detail-item" id="rowConsent">
+            <svg class="detail-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+            <div class="detail-copy">
+              <span class="detail-label">Personalization Consent</span>
+              <span id="attrConsent" class="detail-value">Personalization is off</span>
+            </div>
+          </div>
+
+          <div class="detail-item" id="rowPreferredRegions">
+            <svg class="detail-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="10"/><polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76"/></svg>
+            <div class="detail-copy">
+              <span class="detail-label">Preferred Regions</span>
+              <span id="attrPreferredRegions" class="detail-value">Not set</span>
+            </div>
+          </div>
+
+          <div class="detail-item" id="rowSuiteAncillary">
+            <svg class="detail-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M3 7v11m0-4h18m0 4v-8a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2"/></svg>
+            <div class="detail-copy">
+              <span class="detail-label">Preferred Suite &amp; Interests</span>
+              <span id="attrSuiteAncillary" class="detail-value">Not set</span>
+            </div>
+          </div>
+
+          <div id="specialNotesRow" class="detail-item hidden">
+            <svg class="detail-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+            <div class="detail-copy">
+              <span class="detail-label">Dietary &amp; Accessibility</span>
+              <span id="attrSpecialNotes" class="detail-value">None</span>
+            </div>
+          </div>
+
+          <div id="complaintRow" class="detail-item hidden">
+            <svg class="detail-icon alert-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+            <div class="detail-copy">
+              <span class="detail-label alert-text">Open Complaint</span>
+              <span id="attrComplaint" class="detail-value alert-text"></span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Card 2: Booking & Concierge Details -->
+      <section class="side-card">
+        <div class="side-card-head">
+          <span class="gold-circle-icon" aria-hidden="true">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+          </span>
+          <h2 class="side-card-title">Booking Details</h2>
+        </div>
+
+        <div id="mockBookingsTable" class="kv-table">
+          <div class="kv-row">
+            <span class="kv-key">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M2 20l2-4h16l2 4"/><path d="M4 16V9a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v7"/><path d="M12 7V3"/></svg>
+              <span>Past voyages</span>
+            </span>
+            <span id="metricVoyages" class="kv-val tabular">0</span>
+          </div>
+
+          <div class="kv-row">
+            <span class="kv-key">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+              <span>Last region</span>
+            </span>
+            <span id="attrPrevRegion" class="kv-val">None</span>
+          </div>
+
+          <div class="kv-row">
+            <span class="kv-key">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+              <span>Upcoming booking</span>
+            </span>
+            <span id="metricBooking" class="kv-val mono">None</span>
+          </div>
+
+          <div class="kv-row">
+            <span class="kv-key">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+              <span>Escalation</span>
+            </span>
+            <span id="profileEscalationBadge" class="status-pill-nominal">None</span>
+          </div>
+        </div>
+
+        <div id="infaBookingsList" class="infa-bookings-list hidden"></div>
+
+        <p id="profileEscalationDetail" class="escalation-subcopy hidden"></p>
+      </section>
+      </div>
+    </div>
+  </aside>
+
+  <footer id="demoFooter" class="demo-footer hidden">
+    <span>Sample data for demonstration</span>
+  </footer>
+  </div>
+
+  <!-- Your Details Modal (Full-screen sheet on mobile) -->
+  <div id="yourDetailsModal" class="modal-backdrop details-modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="yourDetailsModalTitle">
+    <div class="modal-surface details-modal-surface">
+      <div class="modal-header">
+        <div>
+          <p class="modal-eyebrow">Guest Account</p>
+          <h2 id="yourDetailsModalTitle" class="modal-title">Your details</h2>
+        </div>
+        <button type="button" id="closeDetailsModalBtn" class="modal-close-icon-btn" aria-label="Close Your details">&times;</button>
+      </div>
+      <div id="yourDetailsModalBody" class="details-modal-body"></div>
+    </div>
+  </div>
+
+  <!-- Voyage Collection Modal -->
+  <div id="catalogModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="catalogModalTitle">
+    <div class="modal-surface">
+      <div class="modal-header">
+        <div>
+          <p class="modal-eyebrow">Voyage Collection</p>
+          <h2 id="catalogModalTitle" class="modal-title">Curated Collection (12 Voyages)</h2>
+        </div>
+        <button type="button" id="closeCatalogBtn" class="modal-close-btn">Close</button>
+      </div>
+      <div id="catalogGrid" class="catalog-grid"></div>
+    </div>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

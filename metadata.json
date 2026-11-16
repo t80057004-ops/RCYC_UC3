@@ -1,0 +1,8 @@
+{
+  "name": "RCYC Guest Concierge Agent",
+  "description": "MARIS — Ritz-Carlton Yacht Collection Guest Concierge Agent (UC 3) with pluggable data provider, explainable voyage recommendation engine, server-side Gemini phrasing, and Experience Ambassador escalation.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
