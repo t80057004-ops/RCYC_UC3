@@ -251,6 +251,7 @@ textarea:focus-visible {
 .chat-card,
 .topbar-chip-btn,
 .topbar-status-chip,
+.topbar-theme-btn,
 .chat-identity-strip,
 .chat-messages,
 .typing-indicator,
@@ -359,10 +360,10 @@ textarea:focus-visible {
 }
 
 .topbar-brand-wordmark {
-  font-family: var(--font-sans);
-  font-size: 1rem;
+  font-family: var(--font-serif);
+  font-size: 1.25rem;
   font-weight: 600;
-  letter-spacing: 0.14em;
+  letter-spacing: 0.16em;
   color: var(--on-navy);
   line-height: 1;
   white-space: nowrap;
@@ -837,6 +838,30 @@ textarea:focus-visible {
   font-weight: 500;
   color: var(--on-navy);
   white-space: nowrap;
+}
+
+.topbar-theme-btn {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border-radius: 999px;
+  background-color: rgba(255, 255, 255, 0.1);
+  border: 1px solid var(--header-border-subtle);
+  color: var(--on-navy);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.topbar-theme-btn:hover {
+  border-color: var(--gold);
+  background-color: var(--header-btn-hover);
+}
+
+.topbar-theme-btn:focus-visible {
+  outline-color: var(--gold);
 }
 
 .status-dot {
@@ -2482,8 +2507,8 @@ textarea:focus-visible {
   }
 
   .topbar-brand-wordmark {
-    font-size: 0.9rem;
-    letter-spacing: 0.12em;
+    font-size: 1.1rem;
+    letter-spacing: 0.14em;
   }
 
   .app-topbar-right {
@@ -2494,6 +2519,11 @@ textarea:focus-visible {
   .topbar-status-chip {
     font-size: 0.69rem;
     padding: 0.25rem 0.52rem;
+  }
+
+  .topbar-theme-btn {
+    width: 28px;
+    height: 28px;
   }
 
   .chat-identity-strip {

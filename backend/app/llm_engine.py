@@ -156,6 +156,7 @@ def build_rule_based_reply(
     card_focus: str = "",
     all_destinations: list[str] | None = None,
     attachment: ChatAttachment | None = None,
+    yacht_context: dict[str, Any] | None = None,
 ) -> str:
     """Deterministic, warm MARIS response strictly grounded in catalog and profile records."""
     known_guest = (not visitor_mode) and profile.guest_status in {"returning", "new"}
@@ -350,9 +351,9 @@ def build_rule_based_reply(
 
         def _format_booking_line(b: Booking, include_missing_dates_note: bool) -> str:
             if b.voyage_name:
-                head = f"- **{b.voyage_name}** (`{b.voyage_id}`, Booking `{b.booking_id}`)"
+                head = f"- **{b.voyage_name}** (`{b.voyage_id}`, Booking **{b.booking_id}**)"
             else:
-                head = f"- **Booking `{b.booking_id}`**" + (f" · Voyage No. `{b.voyage_id}`" if b.voyage_id else "")
+                head = f"- **Booking {b.booking_id}**" + (f" · Voyage No. `{b.voyage_id}`" if b.voyage_id else "")
             parts: list[str] = []
             if b.destination:
                 parts.append(b.destination)
@@ -447,6 +448,79 @@ def build_rule_based_reply(
             + "\n".join(lines)
             + visitor_footer
         )
+
+    if intent == "yacht_catalog" and referenced_voyages:
+        ctx = yacht_context or {}
+        yachts = list(ctx.get("yachts") or list(dict.fromkeys(v.yacht_name for v in referenced_voyages if v.yacht_name)))
+        regions = list(ctx.get("regions") or [])
+        no_region_match = bool(ctx.get("no_region_match", False))
+        asks_next_voyage = bool(ctx.get("asks_next_voyage", False))
+
+        def _yacht_bullet(v: Voyage) -> str:
+            return (
+                f"- **{v.voyage_name}** (`{v.voyage_id}`): {v.destination} · {v.duration} nights · {v.season} · "
+                f"From **{_format_currency(v.price)}** per guest · Suites: {v.suite_availability}"
+            )
+
+        consent_note = (
+            "Personalization is currently off, so I am sharing our general catalog options. "
+            if known_guest and not consent_applied
+            else ""
+        )
+        visitor_footer = (
+            "\n\nYou can browse the full **Voyage Collection**, speak with an **Experience Ambassador**, or **sign in** for bookings and personalized assistance."
+            if visitor_mode
+            else ""
+        )
+
+        if len(yachts) >= 2:
+            yacht_label = " and ".join(f"**{y}**" for y in yachts)
+            if no_region_match and regions:
+                region_label = ", ".join(regions)
+                intro = f"{consent_note}We currently have no {yacht_label} voyages in **{region_label}**. Here are their other voyages in our collection:"
+            elif asks_next_voyage:
+                intro = (
+                    f"{consent_note}The catalog lists voyages for {yacht_label} by season and does not hold departure dates beyond the season shown. "
+                    "Here are their voyages in our collection:"
+                )
+            elif regions:
+                region_label = ", ".join(regions)
+                intro = f"{consent_note}Here are our voyages aboard {yacht_label} in **{region_label}**:"
+            else:
+                intro = f"{consent_note}Here are our catalog voyages aboard {yacht_label}:"
+
+            groups: list[str] = []
+            for y in yachts:
+                y_voyages = [v for v in referenced_voyages if v.yacht_name.lower() == y.lower()]
+                if y_voyages:
+                    groups.append(f"**{y}**\n" + "\n".join(_yacht_bullet(v) for v in y_voyages))
+            return f"{intro}\n\n" + "\n\n".join(groups) + visitor_footer
+
+        yacht_name = yachts[0]
+        if no_region_match and regions:
+            region_label = ", ".join(regions)
+            intro = (
+                f"{consent_note}We currently have no **{yacht_name}** voyages in **{region_label}**. "
+                f"Here are **{yacht_name}**'s {len(referenced_voyages)} other voyage{'s' if len(referenced_voyages) != 1 else ''} in our collection:"
+            )
+        elif asks_next_voyage:
+            intro = (
+                f"{consent_note}The catalog lists **{yacht_name}** voyages by season and does not hold departure dates beyond the season shown. "
+                f"Here {'is' if len(referenced_voyages) == 1 else 'are'} the **{len(referenced_voyages)}** voyage{'s' if len(referenced_voyages) != 1 else ''} aboard **{yacht_name}**:"
+            )
+        elif regions:
+            region_label = ", ".join(regions)
+            intro = (
+                f"{consent_note}We currently offer **{len(referenced_voyages)}** **{yacht_name}** voyage{'s' if len(referenced_voyages) != 1 else ''} "
+                f"in **{region_label}**:"
+            )
+        else:
+            intro = (
+                f"{consent_note}We currently offer **{len(referenced_voyages)}** voyage{'s' if len(referenced_voyages) != 1 else ''} "
+                f"aboard **{yacht_name}**:"
+            )
+        lines = [_yacht_bullet(v) for v in referenced_voyages]
+        return f"{intro}\n\n" + "\n".join(lines) + visitor_footer
 
     if intent == "card_focus":
         focus_voyages = (
@@ -576,6 +650,35 @@ def build_rule_based_reply(
             "Please share the key details in a message and I will gladly help."
         )
 
+    if intent == "general" and referenced_voyages:
+        lowered_msg = user_message.lower()
+        matching = [
+            v
+            for v in referenced_voyages
+            if v.destination.lower() in lowered_msg
+            or v.yacht_name.lower() in lowered_msg
+            or v.voyage_name.lower() in lowered_msg
+            or any(
+                len(seg.strip()) >= 6 and seg.strip() in lowered_msg
+                for seg in re.split(r"\s*[&·,/]\s*", v.voyage_name.lower())
+            )
+        ]
+        shown = matching or referenced_voyages[:3]
+        lines = [
+            f"- **{v.voyage_name}** (`{v.voyage_id}`, {v.yacht_name}): {v.destination} · {v.duration} nights · {v.season} · From **{_format_currency(v.price)}** per guest · Suites: {v.suite_availability}"
+            for v in shown
+        ]
+        visitor_footer = (
+            "\n\nYou can also browse the **Voyage Collection**, speak with an **Experience Ambassador**, or **sign in** for bookings and personalized help."
+            if visitor_mode
+            else ""
+        )
+        return (
+            "Here are the matching voyages from our catalog:\n\n"
+            + "\n".join(lines)
+            + visitor_footer
+        )
+
     if visitor_mode:
         return (
             "I would be glad to help you explore our **Voyage Collection** across the Mediterranean, Caribbean, Alaska, "
@@ -632,6 +735,7 @@ class PluggableLLMEngine:
         card_focus: str = "",
         all_destinations: list[str] | None = None,
         attachment: ChatAttachment | None = None,
+        yacht_context: dict[str, Any] | None = None,
     ) -> tuple[str, str, bool]:
         """Generate grounded response. Falls back silently to rule_based on any failure."""
         rule_reply = build_rule_based_reply(
@@ -650,6 +754,7 @@ class PluggableLLMEngine:
             card_focus=card_focus,
             all_destinations=all_destinations,
             attachment=attachment,
+            yacht_context=yacht_context,
         )
 
         # Deterministic safety, privacy, booking, contact, complaint, refund, medical,
@@ -669,6 +774,7 @@ class PluggableLLMEngine:
             referenced_voyages=referenced_voyages,
             user_message=user_message,
             attachment=attachment,
+            yacht_context=yacht_context,
         )
 
         if provider == "gemini":
@@ -727,6 +833,7 @@ class PluggableLLMEngine:
         referenced_voyages: list[Voyage],
         user_message: str,
         attachment: ChatAttachment | None = None,
+        yacht_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "user_message": user_message,
@@ -749,6 +856,7 @@ class PluggableLLMEngine:
                     "voyage_id": v.voyage_id,
                     "voyage_name": v.voyage_name,
                     "destination": v.destination,
+                    "yacht_name": v.yacht_name,
                     "duration": v.duration,
                     "price": v.price,
                     "season": v.season,
@@ -761,6 +869,8 @@ class PluggableLLMEngine:
                 for v in referenced_voyages
             ],
         }
+        if intent == "yacht_catalog" and yacht_context:
+            payload["yacht_context"] = yacht_context
         if consent_applied and profile.first_name:
             payload["first_name"] = profile.first_name
         if attachment is not None:
@@ -775,12 +885,13 @@ class PluggableLLMEngine:
             "You are MARIS, the luxury yacht concierge for The Ritz-Carlton Yacht Collection. "
             "Phrase a warm, concise response strictly from the supplied JSON facts (and any attached file when provided). "
             "CRITICAL RULES: "
-            "1. Use ONLY voyage names, destinations, durations, prices, seasons, suites, highlights, and ports present in catalog_voyages. "
-            "2. NEVER invent dates, prices, availability, preferred suites, past sailings, loyalty tiers, or personal preferences not in the JSON. "
-            "3. Do NOT include any numeric match scores or technical labels like 'rule_based' or 'Guest 360'. "
-            "4. If first_name is absent from the JSON, do not address the guest by name. "
-            "5. Do NOT open with 'Welcome aboard' or repetitive greetings; answer directly, use '- ' for bullets, and avoid stray asterisks. "
-            "6. If an attached file (PDF, text, or image) is included in the user message, read and describe/answer about that attached file accurately while still enforcing all privacy and catalog grounding rules."
+            "1. Use ONLY voyage names, yacht names, destinations, durations, prices, seasons, suites, highlights, and ports present in catalog_voyages. "
+            "2. NEVER invent departure dates beyond the season shown, or invent prices, availability, preferred suites, past sailings, loyalty tiers, or personal preferences not in the JSON. "
+            "3. When yacht_context indicates no_region_match is true, state honestly that there are no voyages for that yacht and region combination and present the yacht's other voyages from catalog_voyages. When yacht_context.asks_next_voyage is true, state that the catalog does not hold departure dates beyond the season shown. "
+            "4. Do NOT include any numeric match scores or technical labels like 'rule_based' or 'Guest 360'. "
+            "5. If first_name is absent from the JSON, do not address the guest by name. "
+            "6. Do NOT open with 'Welcome aboard' or repetitive greetings; answer directly, use '- ' for bullets, and avoid stray asterisks. "
+            "7. If an attached file (PDF, text, or image) is included in the user message, read and describe/answer about that attached file accurately while still enforcing all privacy and catalog grounding rules."
         )
 
     def _call_gemini(self, facts: dict[str, Any], attachment: ChatAttachment | None = None) -> str:

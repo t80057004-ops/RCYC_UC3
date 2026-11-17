@@ -200,10 +200,9 @@ const el = {
   inlineLookupForm: document.getElementById("inlineLookupForm"),
   inlineRcycInput: document.getElementById("inlineRcycInput"),
   idLookupFeedback: document.getElementById("idLookupFeedback"),
-  themeToggleBtn: document.getElementById("themeToggleBtn"),
-  themeToggleLabel: document.getElementById("themeToggleLabel"),
-  themeIconMoon: document.getElementById("themeIconMoon"),
-  themeIconSun: document.getElementById("themeIconSun"),
+  topbarThemeToggleBtn: document.getElementById("topbarThemeToggleBtn"),
+  topbarThemeIconMoon: document.getElementById("topbarThemeIconMoon"),
+  topbarThemeIconSun: document.getElementById("topbarThemeIconSun"),
   accountMenuBtn: document.getElementById("accountMenuBtn"),
   accountPopover: document.getElementById("accountPopover"),
   popoverMyProfileBtn: document.getElementById("popoverMyProfileBtn"),
@@ -310,17 +309,15 @@ function applyTheme(theme, { persist = false } = {}) {
     document.documentElement.setAttribute("data-theme", normalized);
     document.documentElement.style.colorScheme = normalized;
   }
-  if (el.themeToggleBtn) {
-    const ariaLabel = normalized === "dark" ? "Switch to light mode" : "Switch to dark mode";
-    el.themeToggleBtn.setAttribute("aria-label", ariaLabel);
-    el.themeToggleBtn.setAttribute("title", ariaLabel);
+  const ariaLabel = normalized === "dark" ? "Switch to light mode" : "Switch to dark mode";
+  if (el.topbarThemeToggleBtn) {
+    el.topbarThemeToggleBtn.setAttribute("aria-label", ariaLabel);
+    el.topbarThemeToggleBtn.setAttribute("title", ariaLabel);
+    el.topbarThemeToggleBtn.setAttribute("aria-pressed", String(normalized === "dark"));
   }
-  if (el.themeToggleLabel) {
-    el.themeToggleLabel.textContent = normalized === "dark" ? "Light mode" : "Dark mode";
-  }
-  if (el.themeIconMoon && el.themeIconSun) {
-    el.themeIconMoon.classList.toggle("hidden", normalized === "dark");
-    el.themeIconSun.classList.toggle("hidden", normalized !== "dark");
+  if (el.topbarThemeIconMoon && el.topbarThemeIconSun) {
+    el.topbarThemeIconMoon.classList.toggle("hidden", normalized === "dark");
+    el.topbarThemeIconSun.classList.toggle("hidden", normalized !== "dark");
   }
   if (persist) {
     try {
@@ -1394,7 +1391,7 @@ function appendFormattedInline(parentEl, rawText) {
     let node;
     if (token.startsWith("**") && token.endsWith("**")) {
       node = document.createElement("strong");
-      node.textContent = token.slice(2, -2);
+      node.textContent = token.slice(2, -2).replace(/`/g, "");
     } else if (token.startsWith("*") && token.endsWith("*")) {
       node = document.createElement("em");
       node.textContent = token.slice(1, -1);
@@ -2821,9 +2818,9 @@ el.inlineLookupForm.addEventListener("submit", (e) => {
   }
 });
 
-// Theme Toggle (Inside Profile Popover) & System Preference Sync
-if (el.themeToggleBtn) {
-  el.themeToggleBtn.addEventListener("click", (e) => {
+// Theme Toggle (Topbar) & System Preference Sync
+if (el.topbarThemeToggleBtn) {
+  el.topbarThemeToggleBtn.addEventListener("click", (e) => {
     e.stopPropagation();
     const nextTheme = getCurrentTheme() === "dark" ? "light" : "dark";
     applyTheme(nextTheme, { persist: true });

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import difflib
 import re
 
 from backend.app.config import logger
@@ -63,6 +64,41 @@ DESTINATION_ALIASES: dict[str, list[str]] = {
     "Antarctica": ["antarctica", "antarctic", "drake passage", "south georgia", "penguin", "polar"],
 }
 
+YACHT_ALIASES: dict[str, list[str]] = {
+    "Ilma": ["llma", "ilma", "ilmaa"],
+    "Evrima": ["evrima", "eviram", "evirma", "evrema", "evrma"],
+    "Luminara": ["luminara", "lumnara", "lumina", "luminar", "luminaria"],
+}
+
+_YACHT_FUZZY_STOPWORDS = {"film", "alma", "lima", "mail", "time", "line", "from", "what"}
+
+_SEASON_MONTH_ORDER: dict[str, int] = {
+    "spring": 3,
+    "summer": 6,
+    "autumn": 9,
+    "fall": 9,
+}
+
+
+def _voyage_season_sort_key(voyage: Voyage, catalog_idx: int) -> tuple[int, int, int, int]:
+    """Sort voyages chronologically by upcoming date/season when available, then catalog order."""
+    sailing_date = str(getattr(voyage, "sailing_dates", "") or "").strip()
+    date_match = re.search(r"(\d{4})-(\d{2})-(\d{2})", sailing_date)
+    if date_match:
+        return (0, int(date_match.group(1)), int(date_match.group(2)), catalog_idx)
+
+    season_raw = str(voyage.season or "").strip().lower()
+    year_match = re.search(r"(\d{4})(?:\s*-\s*\d{2,4})?", season_raw)
+    year = int(year_match.group(1)) if year_match else 9999
+    if "winter" in season_raw:
+        # "Winter 2026-27" starts in Dec 2026 before Spring 2027; single-year "Winter 2027" sorts in Jan 2027.
+        month = 12 if "-" in season_raw else 1
+        return (1, year, month, catalog_idx)
+    for token, month in _SEASON_MONTH_ORDER.items():
+        if token in season_raw:
+            return (1, year, month, catalog_idx)
+    return (2, year, 99, catalog_idx)
+
 
 def _build_unknown_profile(rcyc_id: str) -> GuestProfile:
     return GuestProfile(
@@ -105,9 +141,23 @@ def _build_suggested_replies(
     escalation: EscalationInfo,
     user_message: str,
     visitor_mode: bool = False,
+    detected_yachts: list[str] | None = None,
+    catalog_yachts: list[str] | None = None,
 ) -> list[str]:
     if escalation.escalated or intent == "refuse_other_guest":
         return []
+    if intent == "yacht_catalog":
+        yachts_used = list(detected_yachts or [])
+        all_yachts = list(catalog_yachts or [])
+        other_yachts = [y for y in all_yachts if y not in yachts_used]
+        compare_target = other_yachts[0] if other_yachts else (all_yachts[0] if all_yachts else "")
+        suggestions: list[str] = []
+        if referenced_voyages:
+            suggestions.append(f"Tell me more about {referenced_voyages[0].voyage_name}")
+        if compare_target:
+            suggestions.append(f"Compare with {compare_target}")
+        suggestions.append("Best voyage for me")
+        return suggestions[:3]
     if intent == "card_focus":
         focus_voyages = [r.voyage for r in recommendations] if recommendations else referenced_voyages
         if visitor_mode:
@@ -193,6 +243,60 @@ class ConciergeAgent:
             for region, kws in DESTINATION_ALIASES.items()
             if any(kw in lowered for kw in kws)
         ]
+
+    def _detect_yachts(self, text: str, all_voyages: list[Voyage]) -> list[str]:
+        catalog_yachts = list(
+            dict.fromkeys(
+                v.yacht_name.strip()
+                for v in all_voyages
+                if v.yacht_name and v.yacht_name.strip()
+            )
+        )
+        if not catalog_yachts or not text:
+            return []
+
+        canonical_by_lower = {y.lower(): y for y in catalog_yachts}
+        alias_to_canonical: dict[str, str] = {}
+        for y in catalog_yachts:
+            alias_to_canonical[y.lower()] = y
+            for alias in YACHT_ALIASES.get(y, []):
+                alias_to_canonical[alias.lower()] = y
+
+        hits: list[tuple[int, str]] = []
+        canonical_keys = list(canonical_by_lower.keys())
+        for match in re.finditer(r"\b([A-Za-z]+)(?:'s)?\b", text):
+            token = match.group(1).lower()
+            pos = match.start()
+            if token in alias_to_canonical:
+                hits.append((pos, alias_to_canonical[token]))
+            elif len(token) >= 4 and token not in _YACHT_FUZZY_STOPWORDS:
+                close = difflib.get_close_matches(token, canonical_keys, n=1, cutoff=0.75)
+                if close:
+                    hits.append((pos, canonical_by_lower[close[0]]))
+
+        hits.sort(key=lambda item: item[0])
+        ordered: list[str] = []
+        for _, yacht in hits:
+            if yacht not in ordered:
+                ordered.append(yacht)
+        return ordered
+
+    def _mentions_catalog_entity(self, text: str, all_voyages: list[Voyage]) -> bool:
+        if self._detect_yachts(text, all_voyages) or self._detect_destinations(text):
+            return True
+        lowered = text.lower()
+        for v in all_voyages:
+            if (
+                v.voyage_id.lower() in lowered
+                or v.voyage_name.lower() in lowered
+                or v.destination.lower() in lowered
+            ):
+                return True
+            for seg in re.split(r"\s*[&·,/]\s*", v.voyage_name.lower()):
+                seg = seg.strip()
+                if len(seg) >= 6 and seg in lowered:
+                    return True
+        return False
 
     def _detect_voyage_in_text(self, text: str, voyages: list[Voyage]) -> Voyage | None:
         lowered = text.lower()
@@ -687,9 +791,127 @@ class ConciergeAgent:
                 llm_fallback_triggered=fallback,
             )
 
-        # 4. Booking & Past Voyage Questions (and Visitor personal-info gating)
+        # 4. Yacht Catalog & Booking / Past Voyage Questions
         all_voyages = self.data_provider.listVoyages()
+        catalog_yachts = list(
+            dict.fromkeys(
+                v.yacht_name.strip()
+                for v in all_voyages
+                if v.yacht_name and v.yacht_name.strip()
+            )
+        )
         explicit_voyage = self._detect_voyage_in_text(request.message, all_voyages)
+        detected_yachts = self._detect_yachts(request.message, all_voyages)
+        detected_regions = self._detect_destinations(request.message)
+
+        explicit_personal_booking = any(
+            kw in lowered
+            for kw in ["my booking", "my bookings", "my reservation", "my reservations"]
+        )
+        if detected_yachts and explicit_voyage is None and not explicit_personal_booking:
+            active_yachts = list(detected_yachts)
+            if "compare" in lowered and len(active_yachts) == 1:
+                for turn in reversed(request.history[-4:]):
+                    prev_yachts = self._detect_yachts(turn.content or "", all_voyages)
+                    prev_other = [y for y in prev_yachts if y not in active_yachts]
+                    if prev_other:
+                        active_yachts = [prev_other[0], active_yachts[0]]
+                        break
+
+            asks_next_voyage = any(
+                kw in lowered
+                for kw in [
+                    "next voyage",
+                    "next sailing",
+                    "upcoming voyage",
+                    "upcoming sailing",
+                    "earliest voyage",
+                    "soonest",
+                ]
+            )
+            indexed_voyages = list(enumerate(all_voyages))
+            region_set = {r.lower() for r in detected_regions}
+            no_region_match = False
+            yacht_referenced: list[Voyage] = []
+
+            if region_set:
+                matched_groups: list[Voyage] = []
+                for y in active_yachts:
+                    yacht_pairs = [
+                        (idx, v)
+                        for idx, v in indexed_voyages
+                        if v.yacht_name.lower() == y.lower() and v.destination.lower() in region_set
+                    ]
+                    yacht_pairs.sort(key=lambda pair: _voyage_season_sort_key(pair[1], pair[0]))
+                    matched_groups.extend(v for _, v in yacht_pairs)
+                if matched_groups:
+                    yacht_referenced = matched_groups
+                else:
+                    no_region_match = True
+
+            if not yacht_referenced:
+                for y in active_yachts:
+                    yacht_pairs = [
+                        (idx, v)
+                        for idx, v in indexed_voyages
+                        if v.yacht_name.lower() == y.lower()
+                    ]
+                    yacht_pairs.sort(key=lambda pair: _voyage_season_sort_key(pair[1], pair[0]))
+                    yacht_referenced.extend(v for _, v in yacht_pairs)
+
+            yacht_context: dict[str, object] = {
+                "yachts": active_yachts,
+                "regions": detected_regions,
+                "no_region_match": no_region_match,
+                "asks_next_voyage": asks_next_voyage,
+            }
+            reply, provider_used, fallback = self.llm_engine.generate_reply(
+                profile=profile,
+                bookings=[],
+                intent="yacht_catalog",
+                consent_applied=consent_applied,
+                recommendations=[],
+                referenced_voyages=yacht_referenced,
+                escalation=EscalationInfo(escalated=False),
+                user_message=request.message,
+                used_profile_fields=[],
+                visitor_mode=visitor_mode,
+                attachment=request.attachment,
+                yacht_context=yacht_context,
+            )
+            sugs = _build_suggested_replies(
+                "yacht_catalog",
+                [],
+                yacht_referenced,
+                EscalationInfo(escalated=False),
+                request.message,
+                visitor_mode=visitor_mode,
+                detected_yachts=active_yachts,
+                catalog_yachts=catalog_yachts,
+            )
+            logger.info(
+                "Chat handled | id=%s status=%s consent=%s intent=yacht_catalog recs=0 refs=%d escalated=False",
+                profile.rcyc_id,
+                profile.guest_status,
+                consent_applied,
+                len(yacht_referenced),
+            )
+            return ChatResponse(
+                reply=reply,
+                guest_profile=to_public_profile(profile),
+                bookings=bookings if consent_applied else [],
+                guest_recognized=guest_recognized,
+                guest_status=profile.guest_status,
+                consent_applied=consent_applied,
+                used_profile_fields=[],
+                recommendations=[],
+                referenced_voyages=yacht_referenced,
+                suggested_replies=sugs,
+                escalation=EscalationInfo(escalated=False),
+                llm_provider_used=provider_used,
+                llm_fallback_triggered=fallback,
+            )
+
         has_catalog_framing = explicit_voyage is not None or any(
             kw in lowered
             for kw in [
@@ -962,13 +1184,31 @@ class ConciergeAgent:
                 v for v in all_voyages if v.destination.lower() in {r.lower() for r in detected_regions}
             ]
 
+        llm_referenced_voyages = referenced_voyages
+        if intent == "general" and self._mentions_catalog_entity(request.message, all_voyages):
+            llm_referenced_voyages = all_voyages
+            if detected_regions:
+                region_set = {r.lower() for r in detected_regions}
+                referenced_voyages = [v for v in all_voyages if v.destination.lower() in region_set]
+            else:
+                partial_matches = [
+                    v
+                    for v in all_voyages
+                    if any(
+                        len(seg.strip()) >= 6 and seg.strip() in lowered
+                        for seg in re.split(r"\s*[&·,/]\s*", v.voyage_name.lower())
+                    )
+                ]
+                if partial_matches:
+                    referenced_voyages = partial_matches[:3]
+
         reply, provider_used, fallback = self.llm_engine.generate_reply(
             profile=profile,
             bookings=bookings if consent_applied else [],
             intent=intent,
             consent_applied=consent_applied,
             recommendations=recommendations,
-            referenced_voyages=referenced_voyages,
+            referenced_voyages=llm_referenced_voyages,
             escalation=EscalationInfo(escalated=False),
             user_message=request.message,
             used_profile_fields=used_fields,
@@ -987,7 +1227,14 @@ class ConciergeAgent:
         )
 
         sugs = _build_suggested_replies(
-            intent, recommendations, referenced_voyages, EscalationInfo(escalated=False), request.message, visitor_mode=visitor_mode
+            intent,
+            recommendations,
+            referenced_voyages,
+            EscalationInfo(escalated=False),
+            request.message,
+            visitor_mode=visitor_mode,
+            detected_yachts=detected_yachts,
+            catalog_yachts=catalog_yachts,
         )
         return ChatResponse(
             reply=reply,

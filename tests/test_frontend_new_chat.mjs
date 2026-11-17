@@ -472,15 +472,24 @@ async function run() {
   assert.equal(openSidebarBtn.classList.contains("hidden"), true);
   assert.equal(sb1.sessionMap.get("maris_history_sidebar_open:v1:desktop"), "true");
 
-  // Theme toggle inside account popover switches light <-> dark
-  const themeToggleBtn = sb1.elementsById.get("themeToggleBtn");
-  const themeToggleLabel = sb1.elementsById.get("themeToggleLabel");
-  assert.equal(themeToggleLabel.textContent, "Dark mode");
-  themeToggleBtn.click();
+  // Theme toggle is only in the top-right header (removed from sidebar popover) and switches light <-> dark
+  assert.equal(sb1.elementsById.get("themeToggleBtn"), undefined);
+  const topbarThemeToggleBtn = sb1.elementsById.get("topbarThemeToggleBtn");
+  const topbarThemeIconMoon = sb1.elementsById.get("topbarThemeIconMoon");
+  const topbarThemeIconSun = sb1.elementsById.get("topbarThemeIconSun");
+  assert.equal(topbarThemeToggleBtn.getAttribute("aria-pressed"), "false");
+  assert.equal(topbarThemeIconMoon.classList.contains("hidden"), false);
+  assert.equal(topbarThemeIconSun.classList.contains("hidden"), true);
+  topbarThemeToggleBtn.click();
   assert.equal(sb1.documentStub.documentElement.getAttribute("data-theme"), "dark");
-  assert.equal(themeToggleLabel.textContent, "Light mode");
-  themeToggleBtn.click();
+  assert.equal(topbarThemeToggleBtn.getAttribute("aria-pressed"), "true");
+  assert.equal(topbarThemeIconMoon.classList.contains("hidden"), true);
+  assert.equal(topbarThemeIconSun.classList.contains("hidden"), false);
+  topbarThemeToggleBtn.click();
   assert.equal(sb1.documentStub.documentElement.getAttribute("data-theme"), "light");
+  assert.equal(topbarThemeToggleBtn.getAttribute("aria-pressed"), "false");
+  assert.equal(topbarThemeIconMoon.classList.contains("hidden"), false);
+  assert.equal(topbarThemeIconSun.classList.contains("hidden"), true);
 
   // Click card 2 ("Dining & culinary" -> focus: "culinary")
   cards[1].click();

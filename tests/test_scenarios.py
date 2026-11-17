@@ -8,7 +8,7 @@ import httpx
 
 from backend.app.config import Settings
 from backend.app.llm_engine import PluggableLLMEngine
-from backend.app.models import EscalationInfo, GuestProfile
+from backend.app.models import Booking, EscalationInfo, GuestProfile
 
 
 BASE_URL = sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:3000"
@@ -1674,6 +1674,218 @@ def run_tests() -> None:
         app_main.app.state.concierge_agent = orig_agent_25
 
     results.append({"test": "File attachment validation, Gemini inlineData pass-through & privacy/EA precedence", "status": "PASS"})
+
+    # 26. Yacht detection, yacht_catalog intent, visitor mode yacht questions, general catalog fallback, & booking formatting
+    from backend.app.data_provider import MockProvider as _MockProv26
+
+    mock_prov_26 = _MockProv26(base_cfg.sample_data_json)
+    all_v_26 = mock_prov_26.listVoyages()
+    expected_ilma_ids = {v.voyage_id for v in all_v_26 if v.yacht_name == "Ilma"}
+    expected_evrima_ids = {v.voyage_id for v in all_v_26 if v.yacht_name == "Evrima"}
+    expected_luminara_ids = {v.voyage_id for v in all_v_26 if v.yacht_name == "Luminara"}
+    assert expected_ilma_ids == {"RCYC-MED-01", "RCYC-CAR-02", "RCYC-NEU-01", "RCYC-NEU-02"}
+    assert expected_evrima_ids == {"RCYC-MED-02", "RCYC-CAR-01"}
+    assert expected_luminara_ids == {
+        "RCYC-ALA-01",
+        "RCYC-ALA-02",
+        "RCYC-ASI-01",
+        "RCYC-ASI-02",
+        "RCYC-ANT-01",
+        "RCYC-ANT-02",
+    }
+
+    # Unit check on _detect_yachts (dynamic catalog, aliases, fuzzy >=4 chars, phrasings, and non-matching ordinary words)
+    unit_agent_26 = ConciergeAgent(mock_prov_26, PluggableLLMEngine(base_cfg))
+    assert unit_agent_26._detect_yachts("what are the voyages from llma", all_v_26) == ["Ilma"]
+    assert unit_agent_26._detect_yachts("next voyage from LLMA", all_v_26) == ["Ilma"]
+    assert unit_agent_26._detect_yachts("voyages on eviram", all_v_26) == ["Evrima"]
+    assert unit_agent_26._detect_yachts("aboard Evrima and the Luminara", all_v_26) == ["Evrima", "Luminara"]
+    assert unit_agent_26._detect_yachts("yacht Ilma", all_v_26) == ["Ilma"]
+    assert unit_agent_26._detect_yachts("what are all the options", all_v_26) == []
+
+    # Capture Gemini payloads for yacht_catalog and general catalog mention
+    yacht_gemini_payloads: list[dict[str, object]] = []
+
+    class _YachtCaptureEngine(PluggableLLMEngine):
+        def _call_gemini(self, facts: dict[str, object]) -> str:
+            yacht_gemini_payloads.append(facts)
+            return "Grounded catalog response."
+
+    gem_yacht_cfg = Settings(
+        port=base_cfg.port,
+        log_level=base_cfg.log_level,
+        sample_data_json=base_cfg.sample_data_json,
+        data_provider_mode="mock",
+        demo_mode=True,
+        llm_provider="gemini",
+        gemini_api_key="test-double-key",
+        gemini_model=base_cfg.gemini_model,
+        ollama_base_url=base_cfg.ollama_base_url,
+        ollama_model=base_cfg.ollama_model,
+        anthropic_api_key="",
+        anthropic_model=base_cfg.anthropic_model,
+    )
+    cap_yacht_agent = ConciergeAgent(mock_prov_26, _YachtCaptureEngine(gem_yacht_cfg))
+
+    # 26a. HTTP tests against live mock server (rule_based deterministic renderer)
+    r_llma = client.post("/api/chat", json={"rcyc_id": "RCYC-1001", "message": "what are the voyages from llma"})
+    assert r_llma.status_code == 200
+    d_llma = r_llma.json()
+    assert {v["voyage_id"] for v in d_llma["referenced_voyages"]} == expected_ilma_ids
+    assert "RCYC-MED-01" in d_llma["reply"] and "RCYC-CAR-02" in d_llma["reply"]
+    assert len(d_llma["suggested_replies"]) == 3
+    assert d_llma["suggested_replies"][0].startswith("Tell me more about ")
+    assert d_llma["suggested_replies"][1].startswith("Compare with ")
+    assert d_llma["suggested_replies"][2] == "Best voyage for me"
+
+    # "next voyage from LLMA" returns Ilma catalog voyages + season/date honesty, NOT booking reply
+    r_next_llma = client.post("/api/chat", json={"rcyc_id": "RCYC-1001", "message": "next voyage from LLMA"})
+    assert r_next_llma.status_code == 200
+    d_next_llma = r_next_llma.json()
+    assert {v["voyage_id"] for v in d_next_llma["referenced_voyages"]} == expected_ilma_ids
+    assert "BK-545397" not in d_next_llma["reply"]
+    assert "does not hold departure dates beyond the season shown" in d_next_llma["reply"].lower()
+
+    # Evrima itineraries & typo "eviram"
+    for ev_msg in ["Evrima itineraries", "voyages on eviram"]:
+        r_ev = client.post("/api/chat", json={"rcyc_id": "RCYC-1001", "message": ev_msg})
+        assert r_ev.status_code == 200
+        d_ev = r_ev.json()
+        assert {v["voyage_id"] for v in d_ev["referenced_voyages"]} == expected_evrima_ids
+
+    # Luminara queries include RCYC-ALA-01, RCYC-ALA-02 (and all Luminara voyages)
+    for lum_msg in ["tell me about Luminara", "luminara voyages"]:
+        r_lum = client.post("/api/chat", json={"rcyc_id": "RCYC-1001", "message": lum_msg})
+        assert r_lum.status_code == 200
+        d_lum = r_lum.json()
+        lum_ids = {v["voyage_id"] for v in d_lum["referenced_voyages"]}
+        assert {"RCYC-ALA-01", "RCYC-ALA-02"}.issubset(lum_ids)
+        assert lum_ids == expected_luminara_ids
+
+    # Yacht + matching region ("Ilma in the Mediterranean")
+    r_ilma_med = client.post("/api/chat", json={"rcyc_id": "RCYC-1001", "message": "Ilma in the Mediterranean"})
+    assert r_ilma_med.status_code == 200
+    assert [v["voyage_id"] for v in r_ilma_med.json()["referenced_voyages"]] == ["RCYC-MED-01"]
+
+    # Yacht + non-matching region ("Ilma in Alaska") -> honest "no" + Ilma's other voyages
+    r_ilma_ak = client.post("/api/chat", json={"rcyc_id": "RCYC-1001", "message": "Ilma in Alaska"})
+    assert r_ilma_ak.status_code == 200
+    d_ilma_ak = r_ilma_ak.json()
+    assert "no **ilma** voyages in **alaska**" in d_ilma_ak["reply"].lower()
+    assert {v["voyage_id"] for v in d_ilma_ak["referenced_voyages"]} == expected_ilma_ids
+
+    # Two yachts named ("Compare Evrima and Luminara") -> both groups shown
+    r_two_yachts = client.post("/api/chat", json={"rcyc_id": "RCYC-1001", "message": "Compare Evrima and Luminara"})
+    assert r_two_yachts.status_code == 200
+    d_two = r_two_yachts.json()
+    assert {v["voyage_id"] for v in d_two["referenced_voyages"]} == (expected_evrima_ids | expected_luminara_ids)
+    assert "**Evrima**" in d_two["reply"] and "**Luminara**" in d_two["reply"]
+
+    # "what are my bookings" still hits bookings (not yacht_catalog), and booking IDs have NO backticks
+    r_my_bk = client.post("/api/chat", json={"rcyc_id": "RCYC-1001", "message": "what are my bookings"})
+    assert r_my_bk.status_code == 200
+    d_my_bk = r_my_bk.json()
+    assert d_my_bk["referenced_voyages"] == []
+    assert "Booking **BK-545397**" in d_my_bk["reply"]
+    assert "Booking `BK-545397`" not in d_my_bk["reply"]
+
+    # Booking formatting without voyage_name also has NO backticks around booking ID
+    no_name_bk = Booking(
+        booking_id="544427",
+        rcyc_id="1000000092615",
+        voyage_id="13260914",
+        voyage_name="",
+        destination="",
+        ship="",
+        suite_category="",
+        booked_on="2026-05-03",
+        sailing_dates=None,
+        status_code="C",
+        status_label="Confirmed",
+    )
+    rendered_bk = PluggableLLMEngine(base_cfg).generate_reply(
+        profile=GuestProfile(rcyc_id="1000000092615", first_name="Dennis", last_name="Woods", loyalty_tier="Member"),
+        bookings=[no_name_bk],
+        intent="booking_inquiry",
+        consent_applied=True,
+        recommendations=[],
+        referenced_voyages=[],
+        escalation=EscalationInfo(escalated=False),
+        user_message="what are my bookings",
+    )[0]
+    assert "**Booking 544427**" in rendered_bk
+    assert "`544427`" not in rendered_bk
+
+    # "show all voyages" unaffected (catalog_overview), "what are all the options" detects no yacht
+    r_all_v = client.post("/api/chat", json={"rcyc_id": "RCYC-1001", "message": "show all voyages"})
+    assert r_all_v.status_code == 200
+    assert "Voyage Collection" in r_all_v.json()["reply"]
+
+    r_opts = client.post("/api/chat", json={"rcyc_id": "RCYC-1001", "message": "what are all the options"})
+    assert r_opts.status_code == 200
+    assert r_opts.json()["referenced_voyages"] == []
+
+    # 26b. Gemini payload verification: yacht_catalog intent & general catalog mention sends full catalog
+    yacht_gemini_payloads.clear()
+    cap_yacht_agent.handle_chat(ChatRequest(rcyc_id="RCYC-1001", message="what are the voyages from llma"))
+    assert len(yacht_gemini_payloads) == 1
+    assert yacht_gemini_payloads[0]["intent"] == "yacht_catalog"
+    assert {v["voyage_id"] for v in yacht_gemini_payloads[0]["catalog_voyages"]} == expected_ilma_ids  # type: ignore[index]
+
+    yacht_gemini_payloads.clear()
+    cap_yacht_agent.handle_chat(ChatRequest(rcyc_id="RCYC-1001", message="Tell me about Amalfi"))
+    assert len(yacht_gemini_payloads) == 1
+    assert yacht_gemini_payloads[0]["intent"] == "general"
+    assert len(yacht_gemini_payloads[0]["catalog_voyages"]) == len(all_v_26)  # type: ignore[arg-type]
+
+    # Rule-based fallback for "Tell me about Amalfi" does NOT return generic "I would be pleased to help..."
+    r_amalfi = client.post("/api/chat", json={"rcyc_id": "RCYC-1001", "message": "Tell me about Amalfi"})
+    assert r_amalfi.status_code == 200
+    assert "i would be pleased to help" not in r_amalfi.json()["reply"].lower()
+    assert "Amalfi Coast & Cycladic Isles" in r_amalfi.json()["reply"]
+
+    # 26c. Visitor mode answers yacht questions from catalog with zero Informatica calls and zero guest data
+    try:
+        cfg_26 = make_infa_cfg()
+        prov_26 = InformaticaProvider(cfg_26)
+        eng_26 = PluggableLLMEngine(cfg_26)
+        app_main.app.state.settings = cfg_26
+        app_main.app.state.data_provider = prov_26
+        app_main.app.state.concierge_agent = ConciergeAgent(prov_26, eng_26)
+        app_main.visitor_chat_timestamps.clear()
+        infa_calls_26: list[str] = []
+
+        def track_26(method: str, url: str, headers=None, json=None, timeout=None):
+            infa_calls_26.append(url)
+            return fake_infa_http_18(method, url, headers=headers, json=json, timeout=timeout)
+
+        with patch("backend.app.data_provider.httpx.request", side_effect=track_26):
+            c_v26 = TestClient(app_main.app, base_url="https://testserver", client=("127.0.0.1", 51238))
+            v26_tok = c_v26.post("/api/visitor").json()["token"]
+            for vis_msg, exp_ids in [
+                ("what are the voyages from llma", expected_ilma_ids),
+                ("Evrima", expected_evrima_ids),
+                ("Luminara voyages", expected_luminara_ids),
+                ("next voyage from LLMA", expected_ilma_ids),
+            ]:
+                rv26 = c_v26.post(
+                    "/api/chat",
+                    headers={"Authorization": f"Bearer {v26_tok}", "X-Forwarded-For": "198.51.100.123"},
+                    json={"rcyc_id": "1000000092615", "message": vis_msg},
+                )
+                assert rv26.status_code == 200, rv26.text
+                dv26 = rv26.json()
+                assert dv26["bookings"] == []
+                assert dv26["guest_profile"]["rcyc_id"] == "ANONYMOUS"
+                assert {v["voyage_id"] for v in dv26["referenced_voyages"]} == exp_ids
+            assert len(infa_calls_26) == 0
+    finally:
+        app_main.app.state.settings = orig_settings_14
+        app_main.app.state.data_provider = orig_provider
+        app_main.app.state.concierge_agent = orig_agent
+        app_main.visitor_chat_timestamps.clear()
+
+    results.append({"test": "Yacht detection, yacht_catalog intent, visitor yacht queries, general catalog LLM fallback & booking formatting", "status": "PASS"})
 
     print(json.dumps(results, indent=2))
 
