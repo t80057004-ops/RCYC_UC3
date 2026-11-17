@@ -49,15 +49,22 @@ function hasPythonDeps(): Promise<boolean> {
   });
 }
 
-function runShell(cmd: string): Promise<number> {
+function runShell(cmd: string): Promise<{ code: number; output: string }> {
   return new Promise((resolve) => {
     const child = spawn('bash', ['-lc', cmd], {
       cwd: process.cwd(),
-      stdio: 'inherit',
+      stdio: ['ignore', 'pipe', 'pipe'],
       env: pythonEnv(),
     });
-    child.on('exit', (code) => resolve(code ?? 1));
-    child.on('error', () => resolve(1));
+    const chunks: Buffer[] = [];
+    child.stdout?.on('data', (chunk: Buffer) => chunks.push(chunk));
+    child.stderr?.on('data', (chunk: Buffer) => chunks.push(chunk));
+    child.on('exit', (code) => {
+      resolve({ code: code ?? 1, output: Buffer.concat(chunks).toString('utf8').trim() });
+    });
+    child.on('error', (err) => {
+      resolve({ code: 1, output: err.message });
+    });
   });
 }
 
@@ -65,28 +72,32 @@ async function ensurePythonDeps(): Promise<void> {
   if (await hasPythonDeps()) return;
   console.log('[rcyc-proxy] Installing Python dependencies from requirements.txt...');
 
-  const hasPip = (await runShell('python3 -m pip --version >/dev/null 2>&1')) === 0;
-  if (!hasPip) {
-    const ensurePipStatus = await runShell('python3 -m ensurepip --upgrade >/dev/null 2>&1');
-    if (ensurePipStatus !== 0) {
-      const pipStatus = await runShell(
-        'curl -sSL https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py && (python3 /tmp/get-pip.py --no-warn-script-location --break-system-packages || python3 /tmp/get-pip.py --no-warn-script-location --user) && rm -f /tmp/get-pip.py',
+  const pipCheck = await runShell('python3 -m pip --version');
+  if (pipCheck.code !== 0) {
+    const ensurePip = await runShell('python3 -m ensurepip --upgrade');
+    if (ensurePip.code !== 0) {
+      const pipBootstrap = await runShell(
+        'curl -sSL https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py && (python3 /tmp/get-pip.py -q --no-warn-script-location --break-system-packages || python3 /tmp/get-pip.py -q --no-warn-script-location --user) && rm -f /tmp/get-pip.py',
       );
-      if (pipStatus !== 0) {
+      if (pipBootstrap.code !== 0) {
+        if (pipBootstrap.output) console.error(pipBootstrap.output);
         throw new Error('Failed to bootstrap pip for Python backend.');
       }
     }
   }
 
   fs.mkdirSync(PYDEPS_DIR, { recursive: true });
-  const installStatus = await runShell(
-    `python3 -m pip install --no-cache-dir --upgrade --target "${PYDEPS_DIR}" -r requirements.txt`,
+  const pipFlags = '--quiet --disable-pip-version-check --no-warn-script-location --no-cache-dir';
+  const primaryInstall = await runShell(
+    `python3 -m pip install ${pipFlags} --upgrade --target "${PYDEPS_DIR}" -r requirements.txt`,
   );
-  if (installStatus !== 0) {
-    const fallbackStatus = await runShell(
-      'python3 -m pip install --no-cache-dir --break-system-packages -r requirements.txt || python3 -m pip install --no-cache-dir -r requirements.txt',
+  if (primaryInstall.code !== 0) {
+    const fallbackInstall = await runShell(
+      `python3 -m pip install ${pipFlags} --break-system-packages -r requirements.txt || python3 -m pip install ${pipFlags} -r requirements.txt`,
     );
-    if (fallbackStatus !== 0) {
+    if (fallbackInstall.code !== 0) {
+      if (primaryInstall.output) console.error(primaryInstall.output);
+      if (fallbackInstall.output) console.error(fallbackInstall.output);
       throw new Error('Failed to install Python dependencies from requirements.txt.');
     }
   }
@@ -111,10 +122,26 @@ async function startFastApiInternal(): Promise<void> {
     ['-m', 'uvicorn', 'backend.app.main:app', '--host', FASTAPI_HOST, '--port', String(FASTAPI_PORT)],
     {
       cwd: process.cwd(),
-      stdio: 'inherit',
+      stdio: ['ignore', 'pipe', 'pipe'],
       env: pythonEnv(),
     },
   );
+
+  pythonProcess.stdout?.on('data', (chunk: Buffer) => {
+    process.stdout.write(chunk);
+  });
+
+  pythonProcess.stderr?.on('data', (chunk: Buffer) => {
+    const text = chunk.toString('utf8');
+    for (const line of text.split(/\r?\n/)) {
+      if (!line) continue;
+      if (/^(INFO:|[\d-]+ [\d:,]+ \| INFO\b)/.test(line)) {
+        process.stdout.write(`${line}\n`);
+      } else {
+        process.stderr.write(`${line}\n`);
+      }
+    }
+  });
 
   pythonProcess.on('exit', (code, signal) => {
     console.log(`[rcyc-proxy] FastAPI process exited (code=${code}, signal=${signal})`);

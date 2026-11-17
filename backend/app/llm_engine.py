@@ -11,6 +11,7 @@ import httpx
 from backend.app.config import Settings, logger, settings
 from backend.app.models import (
     Booking,
+    ChatAttachment,
     EscalationInfo,
     GuestProfile,
     Voyage,
@@ -34,6 +35,7 @@ RULE_ONLY_INTENTS = {
     "dietary",
     "accessibility",
     "human_escalation",
+    "card_focus",
 }
 
 
@@ -151,6 +153,9 @@ def build_rule_based_reply(
     used_profile_fields: list[str] | None = None,
     masked_contact: dict[str, str | None] | None = None,
     visitor_mode: bool = False,
+    card_focus: str = "",
+    all_destinations: list[str] | None = None,
+    attachment: ChatAttachment | None = None,
 ) -> str:
     """Deterministic, warm MARIS response strictly grounded in catalog and profile records."""
     known_guest = (not visitor_mode) and profile.guest_status in {"returning", "new"}
@@ -178,21 +183,9 @@ def build_rule_based_reply(
         )
 
     if intent == "greeting":
-        if visitor_mode:
-            return (
-                "Hello and welcome to The Ritz-Carlton Yacht Collection! "
-                "I can help you explore our **Voyage Collection**, regions, suites, dining, spa & wellness, and shore excursions, "
-                "connect you with an **Experience Ambassador**, or you may **sign in** for bookings and personalized recommendations."
-            )
-        if known_guest:
-            return (
-                f"Hello{salutation_name}! Welcome to The Ritz-Carlton Yacht Collection. "
-                "How may I assist you today with our voyages, suites, onboard dining, or your reservations?"
-            )
-        return (
-            "Hello and welcome to The Ritz-Carlton Yacht Collection! "
-            "How may I assist you today with exploring our voyages, suites, or onboard experiences?"
-        )
+        if known_guest and profile.first_name:
+            return f"Hello, {profile.first_name}. What would you like to explore today?"
+        return "Hello. What would you like to explore today?"
 
     if intent == "thanks":
         if visitor_mode:
@@ -455,6 +448,84 @@ def build_rule_based_reply(
             + visitor_footer
         )
 
+    if intent == "card_focus":
+        focus_voyages = (
+            [r.voyage for r in recommendations[:3]]
+            if recommendations
+            else list(referenced_voyages[:3])
+        )
+        consent_prefix = (
+            "Personalization is currently off on your profile, so I am sharing general catalog options without using your personal history:\n\n"
+            if known_guest and not consent_applied
+            else ""
+        )
+
+        if card_focus == "voyages":
+            dest_list = all_destinations or list(dict.fromkeys(v.destination for v in focus_voyages))
+            dest_summary = ", ".join(f"**{d}**" for d in dest_list)
+            grouped: dict[str, list[Voyage]] = {}
+            for v in focus_voyages:
+                grouped.setdefault(v.destination, []).append(v)
+            sections: list[str] = []
+            for dest, items in grouped.items():
+                item_lines = [
+                    f"- **{v.voyage_name}** (`{v.voyage_id}`) — {v.destination} · {v.duration} nights · From **{_format_currency(v.price)}** ({v.yacht_name}, {v.season})\n"
+                    f"  Highlights: {v.highlights}"
+                    for v in items
+                ]
+                sections.append(f"**{dest}**\n" + "\n".join(item_lines))
+            intro = (
+                f"{consent_prefix}Our Voyage Collection spans {dest_summary}. "
+                "Here are three sailings grouped by destination:"
+                if dest_summary
+                else f"{consent_prefix}Here are featured sailings from our Voyage Collection grouped by destination:"
+            )
+            body = "\n\n".join(sections) if sections else "No matching voyages are currently listed in the catalog."
+            return f"{intro}\n\n{body}\n\nWhich region interests you most?"
+
+        if card_focus == "culinary":
+            lines = [
+                f"- **{v.voyage_name}** (`{v.voyage_id}`) — {v.destination} · {v.duration} nights · From **{_format_currency(v.price)}** ({v.yacht_name}, {v.season})\n"
+                f"  Culinary experiences: {v.culinary_experiences}"
+                for v in focus_voyages
+            ]
+            lead = (
+                f"{consent_prefix}Here are curated voyages highlighted for culinary and dining experiences:"
+                if lines
+                else f"{consent_prefix}No matching culinary voyages are currently listed in the catalog."
+            )
+            body = ("\n\n" + "\n".join(lines)) if lines else ""
+            return f"{lead}{body}\n\nWhich region interests you most for dining and culinary experiences?"
+
+        if card_focus == "wellness":
+            lines = [
+                f"- **{v.voyage_name}** (`{v.voyage_id}`) — {v.destination} · {v.duration} nights · From **{_format_currency(v.price)}** ({v.yacht_name}, {v.season})\n"
+                f"  Wellness experiences: {v.wellness_experiences}"
+                for v in focus_voyages
+            ]
+            lead = (
+                f"{consent_prefix}Here are curated voyages highlighted for spa and wellness experiences:"
+                if lines
+                else f"{consent_prefix}No matching wellness voyages are currently listed in the catalog."
+            )
+            body = ("\n\n" + "\n".join(lines)) if lines else ""
+            return f"{lead}{body}\n\nWhich region interests you most for a wellness-focused sailing?"
+
+        if card_focus == "adventure_cultural":
+            lines = [
+                f"- **{v.voyage_name}** (`{v.voyage_id}`) — {v.destination} · {v.duration} nights · From **{_format_currency(v.price)}** ({v.yacht_name}, {v.season})\n"
+                f"  Adventure experiences: {v.adventure_experiences}\n"
+                f"  Cultural experiences: {v.cultural_experiences}"
+                for v in focus_voyages
+            ]
+            lead = (
+                f"{consent_prefix}Here are curated voyages highlighted for adventure and cultural experiences:"
+                if lines
+                else f"{consent_prefix}No matching adventure or cultural voyages are currently listed in the catalog."
+            )
+            body = ("\n\n" + "\n".join(lines)) if lines else ""
+            return f"{lead}{body}\n\nWhich region interests you most for shore and cultural exploration?"
+
     if recommendations:
         if visitor_mode:
             intro = "Based on what you shared in this conversation, here are catalog voyages that match your interests:\n\n"
@@ -499,6 +570,12 @@ def build_rule_based_reply(
         return intro + "\n".join(rec_lines) + visitor_footer
 
     # Concise general inquiry without unsolicited recommendations
+    if attachment is not None and not recommendations and not referenced_voyages:
+        return (
+            f"I received your attached file (`{attachment.name}`), however live file analysis is not available in offline mode right now. "
+            "Please share the key details in a message and I will gladly help."
+        )
+
     if visitor_mode:
         return (
             "I would be glad to help you explore our **Voyage Collection** across the Mediterranean, Caribbean, Alaska, "
@@ -552,6 +629,9 @@ class PluggableLLMEngine:
         used_profile_fields: list[str] | None = None,
         masked_contact: dict[str, str | None] | None = None,
         visitor_mode: bool = False,
+        card_focus: str = "",
+        all_destinations: list[str] | None = None,
+        attachment: ChatAttachment | None = None,
     ) -> tuple[str, str, bool]:
         """Generate grounded response. Falls back silently to rule_based on any failure."""
         rule_reply = build_rule_based_reply(
@@ -567,6 +647,9 @@ class PluggableLLMEngine:
             used_profile_fields=used_profile_fields,
             masked_contact=masked_contact,
             visitor_mode=visitor_mode,
+            card_focus=card_focus,
+            all_destinations=all_destinations,
+            attachment=attachment,
         )
 
         # Deterministic safety, privacy, booking, contact, complaint, refund, medical,
@@ -585,11 +668,16 @@ class PluggableLLMEngine:
             recommendations=recommendations,
             referenced_voyages=referenced_voyages,
             user_message=user_message,
+            attachment=attachment,
         )
 
         if provider == "gemini":
             try:
-                text = self._call_gemini(facts)
+                text = (
+                    self._call_gemini(facts, attachment=attachment)
+                    if attachment is not None
+                    else self._call_gemini(facts)
+                )
                 if text:
                     text = _clean_catalog_reply(text)
                     if (not visitor_mode) and profile.guest_status in {"returning", "new"} and not consent_applied:
@@ -638,6 +726,7 @@ class PluggableLLMEngine:
         recommendations: list[VoyageRecommendation],
         referenced_voyages: list[Voyage],
         user_message: str,
+        attachment: ChatAttachment | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "user_message": user_message,
@@ -674,21 +763,27 @@ class PluggableLLMEngine:
         }
         if consent_applied and profile.first_name:
             payload["first_name"] = profile.first_name
+        if attachment is not None:
+            payload["attached_file"] = {
+                "name": attachment.name,
+                "mime_type": attachment.mime_type,
+            }
         return payload
 
     def _system_prompt(self) -> str:
         return (
             "You are MARIS, the luxury yacht concierge for The Ritz-Carlton Yacht Collection. "
-            "Phrase a warm, concise response strictly from the supplied JSON facts. "
+            "Phrase a warm, concise response strictly from the supplied JSON facts (and any attached file when provided). "
             "CRITICAL RULES: "
             "1. Use ONLY voyage names, destinations, durations, prices, seasons, suites, highlights, and ports present in catalog_voyages. "
             "2. NEVER invent dates, prices, availability, preferred suites, past sailings, loyalty tiers, or personal preferences not in the JSON. "
             "3. Do NOT include any numeric match scores or technical labels like 'rule_based' or 'Guest 360'. "
             "4. If first_name is absent from the JSON, do not address the guest by name. "
-            "5. Do NOT open with 'Welcome aboard' or repetitive greetings; answer directly, use '- ' for bullets, and avoid stray asterisks."
+            "5. Do NOT open with 'Welcome aboard' or repetitive greetings; answer directly, use '- ' for bullets, and avoid stray asterisks. "
+            "6. If an attached file (PDF, text, or image) is included in the user message, read and describe/answer about that attached file accurately while still enforcing all privacy and catalog grounding rules."
         )
 
-    def _call_gemini(self, facts: dict[str, Any]) -> str:
+    def _call_gemini(self, facts: dict[str, Any], attachment: ChatAttachment | None = None) -> str:
         if not self.cfg.gemini_api_key:
             raise RuntimeError("GEMINI_API_KEY not configured in server environment.")
 
@@ -705,13 +800,24 @@ class PluggableLLMEngine:
             "User-Agent": "aistudio-build",
             "x-goog-api-key": self.cfg.gemini_api_key,
         }
+        user_parts: list[dict[str, Any]] = [{"text": json.dumps(facts)}]
+        if attachment is not None:
+            user_parts.append(
+                {
+                    "inlineData": {
+                        "mimeType": attachment.mime_type,
+                        "data": attachment.data_base64,
+                    }
+                }
+            )
         payload = {
             "systemInstruction": {"parts": [{"text": self._system_prompt()}]},
-            "contents": [{"role": "user", "parts": [{"text": json.dumps(facts)}]}],
+            "contents": [{"role": "user", "parts": user_parts}],
         }
+        timeout_sec = 20.0 if attachment is not None else 8.0
         http_status: int | str = "error"
         try:
-            with httpx.Client(timeout=8.0) as client:
+            with httpx.Client(timeout=timeout_sec) as client:
                 resp = client.post(url, headers=headers, json=payload)
                 http_status = resp.status_code
                 resp.raise_for_status()

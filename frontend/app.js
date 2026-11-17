@@ -32,6 +32,16 @@ const MAX_CONVERSATIONS_PER_CUSTOMER = 30;
 const MAX_MESSAGES_PER_CONVERSATION = 60;
 const MOBILE_BREAKPOINT_PX = 1100;
 const FOLLOWUP_CHIPS_IDLE_MS = 8000;
+const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+
+const ALLOWED_ATTACHMENT_EXT_MIME = {
+  ".pdf": "application/pdf",
+  ".txt": "text/plain",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".webp": "image/webp",
+};
 
 const STARTING_CHIPS = [
   {
@@ -109,7 +119,37 @@ const VISITOR_STARTING_CHIPS = [
   },
 ];
 
+const GREETING_MESSAGE_REGEX = /^\s*(hi|hello|hey|good morning|good afternoon|good evening|greetings|hola|bonjour)[\s!.,?]*$/i;
+
+const WELCOME_CARDS = [
+  {
+    title: "Explore voyages",
+    description: "See our voyage collection",
+    focus: "voyages",
+    icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76"/></svg>',
+  },
+  {
+    title: "Dining & culinary",
+    description: "Onboard dining experiences",
+    focus: "culinary",
+    icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 2v7c0 1.1.9 2 2 2h4a2 2 0 0 0 2-2V2"/><path d="M7 2v20"/><path d="M21 15V2v0a5 5 0 0 0-5 5v6c0 1.1.9 2 2 2h3Zm0 0v7"/></svg>',
+  },
+  {
+    title: "Spa & wellness",
+    description: "Wellness experiences",
+    focus: "wellness",
+    icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>',
+  },
+  {
+    title: "Adventure & culture",
+    description: "Shore and cultural experiences",
+    focus: "adventure_cultural",
+    icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 20h18"/><path d="M5 20L10 8l4 7 3-4 4 9"/></svg>',
+  },
+];
+
 const memoryConversationsStore = new Map();
+const memorySessionStore = new Map();
 
 const state = {
   mode: "mock",
@@ -130,6 +170,7 @@ const state = {
   voyagesLoaded: false,
   followupIdleTimer: null,
   pendingSuggestedReplies: [],
+  pendingAttachment: null,
 };
 
 const el = {
@@ -143,11 +184,13 @@ const el = {
   continueVisitorBtn: document.getElementById("continueVisitorBtn"),
   workspaceMain: document.getElementById("workspaceMain"),
   sidebarToggleBtn: document.getElementById("sidebarToggleBtn"),
+  openSidebarBtn: document.getElementById("openSidebarBtn"),
   historyDrawerBackdrop: document.getElementById("historyDrawerBackdrop"),
   historySidebar: document.getElementById("historySidebar"),
-  closeHistoryDrawerBtn: document.getElementById("closeHistoryDrawerBtn"),
   newConversationBtn: document.getElementById("newConversationBtn"),
   historyList: document.getElementById("historyList"),
+  sidebarProfileAvatar: document.getElementById("sidebarProfileAvatar"),
+  sidebarProfileName: document.getElementById("sidebarProfileName"),
   chatIdentityStrip: document.getElementById("chatIdentityStrip"),
   guestPickerSection: document.getElementById("guestPickerSection"),
   guestPickerDivider: document.getElementById("guestPickerDivider"),
@@ -157,11 +200,10 @@ const el = {
   inlineLookupForm: document.getElementById("inlineLookupForm"),
   inlineRcycInput: document.getElementById("inlineRcycInput"),
   idLookupFeedback: document.getElementById("idLookupFeedback"),
-  topbarAccountDivider: document.getElementById("topbarAccountDivider"),
   themeToggleBtn: document.getElementById("themeToggleBtn"),
+  themeToggleLabel: document.getElementById("themeToggleLabel"),
   themeIconMoon: document.getElementById("themeIconMoon"),
   themeIconSun: document.getElementById("themeIconSun"),
-  headerGreeting: document.getElementById("headerGreeting"),
   accountMenuBtn: document.getElementById("accountMenuBtn"),
   accountPopover: document.getElementById("accountPopover"),
   popoverMyProfileBtn: document.getElementById("popoverMyProfileBtn"),
@@ -184,6 +226,13 @@ const el = {
   chatMessages: document.getElementById("chatMessages"),
   typingIndicator: document.getElementById("typingIndicator"),
   quickPrompts: document.getElementById("quickPrompts"),
+  attachmentChipWrap: document.getElementById("attachmentChipWrap"),
+  attachmentFileName: document.getElementById("attachmentFileName"),
+  attachmentFileSize: document.getElementById("attachmentFileSize"),
+  removeAttachmentBtn: document.getElementById("removeAttachmentBtn"),
+  attachmentError: document.getElementById("attachmentError"),
+  fileAttachInput: document.getElementById("fileAttachInput"),
+  attachFileBtn: document.getElementById("attachFileBtn"),
   chatForm: document.getElementById("chatForm"),
   messageInput: document.getElementById("messageInput"),
   sendBtn: document.getElementById("sendBtn"),
@@ -262,9 +311,12 @@ function applyTheme(theme, { persist = false } = {}) {
     document.documentElement.style.colorScheme = normalized;
   }
   if (el.themeToggleBtn) {
-    const label = normalized === "dark" ? "Switch to light mode" : "Switch to dark mode";
-    el.themeToggleBtn.setAttribute("aria-label", label);
-    el.themeToggleBtn.setAttribute("title", label);
+    const ariaLabel = normalized === "dark" ? "Switch to light mode" : "Switch to dark mode";
+    el.themeToggleBtn.setAttribute("aria-label", ariaLabel);
+    el.themeToggleBtn.setAttribute("title", ariaLabel);
+  }
+  if (el.themeToggleLabel) {
+    el.themeToggleLabel.textContent = normalized === "dark" ? "Light mode" : "Dark mode";
   }
   if (el.themeIconMoon && el.themeIconSun) {
     el.themeIconMoon.classList.toggle("hidden", normalized === "dark");
@@ -327,6 +379,32 @@ function safeStorageRemove(key) {
   } catch (err) {
     // Ignore storage access errors
   }
+}
+
+function safeSessionGet(key) {
+  try {
+    if (typeof window !== "undefined" && window.sessionStorage) {
+      const val = window.sessionStorage.getItem(key);
+      if (val !== null) return val;
+    }
+  } catch (err) {
+    // Fall back to memory session store
+  }
+  return memorySessionStore.has(key) ? memorySessionStore.get(key) : null;
+}
+
+function safeSessionSet(key, value) {
+  try {
+    if (typeof window !== "undefined" && window.sessionStorage) {
+      window.sessionStorage.setItem(key, value);
+      memorySessionStore.delete(key);
+      return true;
+    }
+  } catch (err) {
+    // Fall back to memory session store
+  }
+  memorySessionStore.set(key, value);
+  return false;
 }
 
 function getSessionToken() {
@@ -432,6 +510,7 @@ function sanitizeUiMessages(rawMessages) {
     .map((m) => ({
       role: m.role,
       content: m.content,
+      attachmentName: typeof m.attachmentName === "string" && m.attachmentName ? m.attachmentName : null,
       recommendations: Array.isArray(m.recommendations) ? m.recommendations : [],
       referencedVoyages: Array.isArray(m.referencedVoyages) ? m.referencedVoyages : [],
       suggestedReplies: Array.isArray(m.suggestedReplies) ? m.suggestedReplies.map(String).slice(0, 3) : [],
@@ -534,24 +613,6 @@ function buildClientFallbackTitle(message) {
     return "Voyage collection inquiry";
   }
   return "General question";
-}
-
-function formatConversationDateTime(ts) {
-  const d = new Date(Number(ts) || Date.now());
-  const now = new Date();
-  const isToday =
-    d.getFullYear() === now.getFullYear() &&
-    d.getMonth() === now.getMonth() &&
-    d.getDate() === now.getDate();
-
-  if (isToday) {
-    const timePart = d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-    return `Today ${timePart}`;
-  }
-  if (d.getFullYear() === now.getFullYear()) {
-    return d.toLocaleDateString([], { month: "short", day: "numeric" });
-  }
-  return d.toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" });
 }
 
 function normalizeConversationsList(list) {
@@ -777,7 +838,7 @@ function getSidebarStorageKey(mobile = isMobileViewport()) {
 }
 
 function getSavedSidebarOpen(mobile = isMobileViewport()) {
-  const raw = safeStorageGet(getSidebarStorageKey(mobile));
+  const raw = safeSessionGet(getSidebarStorageKey(mobile));
   if (raw === "true") return true;
   if (raw === "false") return false;
   return !mobile;
@@ -789,7 +850,7 @@ function applySidebarOpenState(isOpen, { persist = false } = {}) {
   state.sidebarOpen = open;
 
   if (persist) {
-    safeStorageSet(getSidebarStorageKey(mobile), open ? "true" : "false");
+    safeSessionSet(getSidebarStorageKey(mobile), open ? "true" : "false");
   }
 
   if (el.workspaceMain) {
@@ -806,10 +867,13 @@ function applySidebarOpenState(isOpen, { persist = false } = {}) {
   }
   if (el.sidebarToggleBtn) {
     el.sidebarToggleBtn.setAttribute("aria-expanded", String(open));
-    el.sidebarToggleBtn.setAttribute(
-      "aria-label",
-      open ? "Close conversation history" : "Open conversation history"
-    );
+    el.sidebarToggleBtn.setAttribute("aria-label", open ? "Collapse sidebar" : "Open sidebar");
+    el.sidebarToggleBtn.setAttribute("title", open ? "Collapse sidebar" : "Open sidebar");
+  }
+  if (el.openSidebarBtn) {
+    const showOpenBtn = !open;
+    el.openSidebarBtn.classList.toggle("hidden", !showOpenBtn);
+    el.openSidebarBtn.setAttribute("aria-expanded", String(open));
   }
 }
 
@@ -822,6 +886,49 @@ function closeHistoryDrawer({ persist = false } = {}) {
   }
 }
 
+function getGuestInitials(firstName, fullName = "") {
+  const cleanFull = String(fullName || "").trim();
+  if (cleanFull) {
+    const parts = cleanFull.split(/\s+/).filter(Boolean);
+    if (parts.length >= 2) {
+      return `${parts[0].charAt(0)}${parts[parts.length - 1].charAt(0)}`.toUpperCase();
+    }
+    return parts[0].charAt(0).toUpperCase();
+  }
+  const cleanFirst = String(firstName || "").trim();
+  return cleanFirst ? cleanFirst.charAt(0).toUpperCase() : "G";
+}
+
+function updateSidebarProfileRow() {
+  if (!el.sidebarProfileAvatar || !el.sidebarProfileName) return;
+
+  if (state.isVisitor) {
+    el.sidebarProfileAvatar.textContent = "G";
+    el.sidebarProfileName.textContent = "Guest";
+    return;
+  }
+
+  if (state.mode === "informatica") {
+    const me = state.me || {};
+    const firstName = String(me.first_name || "").trim();
+    const fullName = String(me.full_name || "").trim();
+    const displayFirst = firstName || (fullName ? fullName.split(/\s+/)[0] : "Guest");
+    el.sidebarProfileAvatar.textContent = getGuestInitials(displayFirst, fullName);
+    el.sidebarProfileName.textContent = displayFirst;
+    return;
+  }
+
+  const profile = state.profile || ANONYMOUS_FALLBACK_PROFILE;
+  if (profile.guest_status === "anonymous" || !profile.first_name) {
+    el.sidebarProfileAvatar.textContent = "G";
+    el.sidebarProfileName.textContent = "Guest";
+    return;
+  }
+  const fullName = `${profile.first_name || ""} ${profile.last_name || ""}`.trim();
+  el.sidebarProfileAvatar.textContent = getGuestInitials(profile.first_name, fullName);
+  el.sidebarProfileName.textContent = profile.first_name;
+}
+
 function renderHistorySidebar() {
   if (!el.historyList) return;
   el.historyList.innerHTML = "";
@@ -829,7 +936,9 @@ function renderHistorySidebar() {
   if (!Array.isArray(state.conversations) || state.conversations.length === 0) {
     const empty = document.createElement("div");
     empty.className = "history-empty";
-    empty.textContent = "No conversations yet.";
+    empty.textContent = state.isVisitor
+      ? "Sign in to save chat history."
+      : "No conversations yet.";
     el.historyList.appendChild(empty);
     return;
   }
@@ -936,31 +1045,79 @@ function renderHistorySidebar() {
   }
 }
 
-function buildWelcomeTextForCurrentUser() {
+function getWelcomeHeading() {
   if (state.isVisitor) {
-    return (
-      "Hello and welcome to **MARIS**, your personal yacht concierge for The Ritz-Carlton Yacht Collection. " +
-      "I can help you explore our voyage collection, destinations, suites, dining, spa & wellness, and shore excursions—" +
-      "or sign in anytime for bookings and personalized assistance."
-    );
+    return "How can I help you today?";
   }
   if (state.mode === "informatica") {
     const me = state.me;
     return me && me.first_name
-      ? `Welcome, **${me.first_name}**! How may I assist you with your bookings or our voyage collection today?`
-      : "Welcome to **MARIS**, your personal yacht concierge for The Ritz-Carlton Yacht Collection. How may I assist you today?";
+      ? `How can I help you today, ${me.first_name}?`
+      : "How can I help you today?";
   }
   const profile = state.profile || ANONYMOUS_FALLBACK_PROFILE;
-  if (profile.guest_status === "anonymous") {
-    return "Hello and welcome to **MARIS**, your personal yacht concierge for The Ritz-Carlton Yacht Collection. How may I assist you today?";
+  if (profile.guest_status === "anonymous" || !profile.first_name) {
+    return "How can I help you today?";
   }
-  if (profile.guest_status === "new") {
-    return `Hello, **${profile.first_name}**! Welcome to The Ritz-Carlton Yacht Collection. How may I assist you as you plan your inaugural voyage?`;
+  return `How can I help you today, ${profile.first_name}?`;
+}
+
+function removeWelcomeSection() {
+  const existing = document.getElementById("welcomeSection");
+  if (existing) {
+    existing.remove();
   }
-  if (!profile.personalization_consent) {
-    return "Hello! Personalization is currently off on your profile, so I can assist with general voyage information or connect you with an Experience Ambassador.";
+}
+
+function renderWelcomeSection() {
+  if (!el.chatMessages) return;
+  removeWelcomeSection();
+
+  const section = document.createElement("section");
+  section.id = "welcomeSection";
+  section.className = "welcome-section";
+  section.setAttribute("aria-label", "Welcome");
+
+  const copy = document.createElement("div");
+  copy.className = "welcome-copy";
+
+  const heading = document.createElement("h2");
+  heading.className = "welcome-heading";
+  heading.textContent = getWelcomeHeading();
+
+  copy.appendChild(heading);
+  section.appendChild(copy);
+
+  const grid = document.createElement("div");
+  grid.className = "welcome-cards-grid";
+
+  for (const card of WELCOME_CARDS) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "welcome-action-card";
+    btn.setAttribute("data-focus", card.focus);
+
+    const iconWrap = document.createElement("span");
+    iconWrap.className = "welcome-card-icon";
+    iconWrap.setAttribute("aria-hidden", "true");
+    iconWrap.innerHTML = card.icon;
+
+    const titleEl = document.createElement("span");
+    titleEl.className = "welcome-card-title";
+    titleEl.textContent = card.title;
+
+    btn.appendChild(iconWrap);
+    btn.appendChild(titleEl);
+
+    btn.addEventListener("click", () => {
+      sendMessage(card.title, { focus: card.focus });
+    });
+
+    grid.appendChild(btn);
   }
-  return `Welcome back, **${profile.first_name}**! How may I assist you with your upcoming journey or our voyage collection today?`;
+
+  section.appendChild(grid);
+  el.chatMessages.appendChild(section);
 }
 
 function hasSentUserMessage() {
@@ -1048,33 +1205,133 @@ function scheduleFollowupChips(replies) {
   }, FOLLOWUP_CHIPS_IDLE_MS);
 }
 
+function formatFileSize(bytes) {
+  const n = Number(bytes) || 0;
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${Math.max(1, Math.round(n / 1024))} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function showAttachmentError(message) {
+  if (!el.attachmentError) return;
+  el.attachmentError.textContent = message;
+  el.attachmentError.classList.remove("hidden");
+}
+
+function hideAttachmentError() {
+  if (!el.attachmentError) return;
+  el.attachmentError.textContent = "";
+  el.attachmentError.classList.add("hidden");
+}
+
+function renderAttachmentChip() {
+  if (!el.attachmentChipWrap || !el.attachmentFileName || !el.attachmentFileSize) return;
+  if (!state.pendingAttachment) {
+    el.attachmentChipWrap.classList.add("hidden");
+    el.attachmentFileName.textContent = "";
+    el.attachmentFileSize.textContent = "";
+    return;
+  }
+  el.attachmentFileName.textContent = state.pendingAttachment.name;
+  el.attachmentFileSize.textContent = formatFileSize(state.pendingAttachment.size);
+  el.attachmentChipWrap.classList.remove("hidden");
+}
+
+function clearPendingAttachment({ clearError = true } = {}) {
+  state.pendingAttachment = null;
+  if (el.fileAttachInput) {
+    el.fileAttachInput.value = "";
+  }
+  renderAttachmentChip();
+  if (clearError) {
+    hideAttachmentError();
+  }
+}
+
+function resolveAttachmentMime(file) {
+  const name = String(file?.name || "").trim();
+  const dotIdx = name.lastIndexOf(".");
+  const ext = dotIdx >= 0 ? name.slice(dotIdx).toLowerCase() : "";
+  const expectedMime = ALLOWED_ATTACHMENT_EXT_MIME[ext];
+  if (!expectedMime) {
+    return null;
+  }
+  const reportedMime = String(file?.type || "").trim().toLowerCase();
+  if (reportedMime && reportedMime !== expectedMime) {
+    if (!(expectedMime === "image/jpeg" && reportedMime === "image/jpg")) {
+      return null;
+    }
+  }
+  return expectedMime;
+}
+
+function handleSelectedFile(file) {
+  if (!file) return;
+  hideAttachmentError();
+
+  const resolvedMime = resolveAttachmentMime(file);
+  if (!resolvedMime) {
+    clearPendingAttachment({ clearError: false });
+    showAttachmentError("Unsupported file type. Please attach a PDF, TXT, PNG, JPG, or WEBP file.");
+    return;
+  }
+
+  if (file.size <= 0) {
+    clearPendingAttachment({ clearError: false });
+    showAttachmentError("The selected file is empty.");
+    return;
+  }
+
+  if (file.size > MAX_ATTACHMENT_BYTES) {
+    clearPendingAttachment({ clearError: false });
+    showAttachmentError("File is too large. Maximum size is 10 MB.");
+    return;
+  }
+
+  const reader = new FileReader();
+  reader.onload = () => {
+    const result = typeof reader.result === "string" ? reader.result : "";
+    const commaIdx = result.indexOf(",");
+    const base64Data = commaIdx >= 0 ? result.slice(commaIdx + 1) : result;
+    if (!base64Data) {
+      clearPendingAttachment({ clearError: false });
+      showAttachmentError("Could not read the selected file.");
+      return;
+    }
+    state.pendingAttachment = {
+      name: file.name,
+      mime_type: resolvedMime,
+      size: file.size,
+      data_base64: base64Data,
+    };
+    renderAttachmentChip();
+  };
+  reader.onerror = () => {
+    clearPendingAttachment({ clearError: false });
+    showAttachmentError("Could not read the selected file.");
+  };
+  reader.readAsDataURL(file);
+}
+
 function startNewConversation() {
   state.activeConversationId = null;
   state.pendingDeleteConversationId = null;
   state.history = [];
   state.uiMessages = [];
+  clearPendingAttachment();
   clearSavedActiveConversationId();
   el.chatMessages.innerHTML = "";
   if (state.mode === "informatica") {
     renderEscalation(null);
   }
-  const welcomeContent = buildWelcomeTextForCurrentUser();
-  const welcomeMsg = {
-    role: "assistant",
-    content: welcomeContent,
-    recommendations: [],
-    referencedVoyages: [],
-    suggestedReplies: [],
-    timestamp: currentTimeStr(),
-  };
-  state.uiMessages.push(welcomeMsg);
-  appendMessage(welcomeMsg, { persist: false });
-  showStartingChips();
+  renderWelcomeSection();
+  hideChips({ clearPending: true });
   renderHistorySidebar();
   if (isMobileViewport()) {
     applySidebarOpenState(false, { persist: false });
   }
   if (el.messageInput) {
+    autoResizeMessageInput(el.messageInput);
     el.messageInput.focus();
   }
 }
@@ -1084,15 +1341,18 @@ function loadConversationById(conversationId) {
   if (!conv) return;
   state.activeConversationId = conv.id;
   state.pendingDeleteConversationId = null;
+  clearPendingAttachment();
   setSavedActiveConversationId(conv.id);
   state.history = sanitizeHistoryEntries(conv.history);
   state.uiMessages = sanitizeUiMessages(conv.messages);
   el.chatMessages.innerHTML = "";
+  removeWelcomeSection();
   for (const msg of state.uiMessages) {
     appendMessage(msg, { persist: false });
   }
   if (!hasSentUserMessage()) {
-    showStartingChips();
+    renderWelcomeSection();
+    hideChips({ clearPending: true });
   } else {
     const lastAssistant = [...state.uiMessages].reverse().find((m) => m.role === "assistant");
     scheduleFollowupChips(lastAssistant ? lastAssistant.suggestedReplies : []);
@@ -1115,15 +1375,6 @@ function deleteConversationById(conversationId) {
   } else {
     renderHistorySidebar();
   }
-}
-
-function escapeHtml(text) {
-  return String(text ?? "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
 }
 
 /**
@@ -1203,7 +1454,7 @@ function renderProfile(profile, bookings = [], escalation = null) {
   const isKnown = profile.guest_status === "returning" || profile.guest_status === "new";
   const consentOn = Boolean(isKnown && profile.personalization_consent);
 
-  el.headerGreeting.textContent = isAnon ? "Welcome" : `Welcome, ${profile.first_name}`;
+  updateSidebarProfileRow();
   el.profileKicker.textContent = isAnon ? "Visitor Details" : "Guest Details";
   el.profileName.textContent = isAnon
     ? "Anonymous Visitor"
@@ -1218,7 +1469,6 @@ function renderProfile(profile, bookings = [], escalation = null) {
   el.vipBadge.classList.add("hidden");
   el.profileRcycId.textContent = profile.rcyc_id;
 
-  // Consent = No: panel explicitly shows "Personalization is off" and hides personalized history
   el.consentOffNotice.classList.toggle("hidden", !(isKnown && !consentOn));
 
   if (isAnon) {
@@ -1365,7 +1615,7 @@ function createMarisAvatar() {
   const wrap = document.createElement("div");
   wrap.className = "maris-avatar";
   wrap.innerHTML = `
-    <svg width="22" height="22" viewBox="0 0 36 36" fill="none" aria-hidden="true">
+    <svg width="20" height="20" viewBox="0 0 36 36" fill="none" aria-hidden="true">
       <path d="M18 5L29 24H18V5Z" fill="var(--gold)"/>
       <path d="M16 9L8 24H16V9Z" fill="var(--gold)" fill-opacity="0.82"/>
       <path d="M5 26.5H31L27.5 30.5H8.5L5 26.5Z" fill="var(--gold)"/>
@@ -1374,10 +1624,52 @@ function createMarisAvatar() {
   return wrap;
 }
 
+function toPlainTextReply(rawText) {
+  return String(rawText ?? "")
+    .replace(/\*\*([^*\n]+)\*\*/g, "$1")
+    .replace(/\*([^*\n]+)\*/g, "$1")
+    .replace(/`([^`\n]+)`/g, "$1")
+    .trim();
+}
+
+function selectReplyTextElement(targetEl) {
+  try {
+    if (typeof window === "undefined" || !window.getSelection || !document.createRange || !targetEl) {
+      return false;
+    }
+    const range = document.createRange();
+    range.selectNodeContents(targetEl);
+    const selection = window.getSelection();
+    if (!selection) return false;
+    selection.removeAllRanges();
+    selection.addRange(range);
+    return true;
+  } catch (err) {
+    return false;
+  }
+}
+
+function showCopyButtonFeedback(btnEl, labelEl, message, durationMs = 1500) {
+  if (!btnEl || !labelEl) return;
+  if (btnEl._copyTimer) {
+    clearTimeout(btnEl._copyTimer);
+  }
+  labelEl.textContent = message;
+  labelEl.classList.remove("hidden");
+  btnEl.classList.add("is-feedback-active");
+  btnEl._copyTimer = setTimeout(() => {
+    labelEl.textContent = "";
+    labelEl.classList.add("hidden");
+    btnEl.classList.remove("is-feedback-active");
+    btnEl._copyTimer = null;
+  }, durationMs);
+}
+
 function appendMessage(
-  { role, content, recommendations = [], referencedVoyages = [], suggestedReplies = [], timestamp = null },
+  { role, content, attachmentName = null, recommendations = [], referencedVoyages = [], suggestedReplies = [], timestamp = null },
   { persist = true } = {}
 ) {
+  removeWelcomeSection();
   const timeStr = timestamp || currentTimeStr();
   const row = document.createElement("div");
   row.className = `message-row ${role}`;
@@ -1386,7 +1678,19 @@ function appendMessage(
     const bubble = document.createElement("div");
     bubble.className = "user-bubble";
 
+    if (attachmentName) {
+      const attachPill = document.createElement("div");
+      attachPill.className = "user-bubble-attachment";
+      attachPill.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>';
+      const nameSpan = document.createElement("span");
+      nameSpan.className = "user-bubble-attachment-name";
+      nameSpan.textContent = attachmentName;
+      attachPill.appendChild(nameSpan);
+      bubble.appendChild(attachPill);
+    }
+
     const span = document.createElement("span");
+    span.className = "user-bubble-text";
     span.textContent = content;
     const timeEl = document.createElement("span");
     timeEl.className = "user-bubble-time";
@@ -1414,7 +1718,11 @@ function appendMessage(
 
     const bubble = document.createElement("div");
     bubble.className = "assistant-bubble";
-    bubble.appendChild(buildSanitizedMessageFragment(content));
+
+    const replyTextWrap = document.createElement("div");
+    replyTextWrap.className = "assistant-reply-text";
+    replyTextWrap.appendChild(buildSanitizedMessageFragment(content));
+    bubble.appendChild(replyTextWrap);
 
     const cardsToRender =
       recommendations && recommendations.length > 0
@@ -1492,6 +1800,51 @@ function appendMessage(
     }
 
     col.appendChild(bubble);
+
+    const actionsBar = document.createElement("div");
+    actionsBar.className = "assistant-actions";
+
+    const copyBtn = document.createElement("button");
+    copyBtn.type = "button";
+    copyBtn.className = "copy-reply-btn";
+    copyBtn.setAttribute("aria-label", "Copy reply");
+    copyBtn.title = "Copy reply";
+    copyBtn.innerHTML = `
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+      </svg>
+    `;
+
+    const copyLabel = document.createElement("span");
+    copyLabel.className = "copy-reply-label hidden";
+    copyBtn.appendChild(copyLabel);
+
+    copyBtn.addEventListener("click", async () => {
+      const plain = toPlainTextReply(content);
+      let copied = false;
+      if (
+        typeof navigator !== "undefined" &&
+        navigator.clipboard &&
+        typeof navigator.clipboard.writeText === "function"
+      ) {
+        try {
+          await navigator.clipboard.writeText(plain);
+          copied = true;
+        } catch (err) {
+          copied = false;
+        }
+      }
+      if (copied) {
+        showCopyButtonFeedback(copyBtn, copyLabel, "Copied", 1500);
+      } else {
+        selectReplyTextElement(replyTextWrap);
+        showCopyButtonFeedback(copyBtn, copyLabel, "Press Ctrl+C", 2000);
+      }
+    });
+
+    actionsBar.appendChild(copyBtn);
+    col.appendChild(actionsBar);
     row.appendChild(col);
   }
 
@@ -1502,6 +1855,7 @@ function appendMessage(
     state.uiMessages.push({
       role,
       content,
+      attachmentName: attachmentName || null,
       recommendations: Array.isArray(recommendations) ? recommendations : [],
       referencedVoyages: Array.isArray(referencedVoyages) ? referencedVoyages : [],
       suggestedReplies: Array.isArray(suggestedReplies) ? suggestedReplies.map(String).slice(0, 3) : [],
@@ -1514,6 +1868,7 @@ function appendMessage(
 function renderWelcomeMessage(profile) {
   state.profile = profile;
   state.pendingDeleteConversationId = null;
+  updateSidebarProfileRow();
   const loaded = loadConversationsForCustomer(profile.rcyc_id);
   state.conversations = loaded;
   const savedActiveId = getSavedActiveConversationId(profile.rcyc_id);
@@ -1656,6 +2011,7 @@ function configureMockChrome() {
   el.rowInfaLoyalty.classList.add("hidden");
   el.rowInfaEmail.classList.add("hidden");
   el.rowInfaPhone.classList.add("hidden");
+  updateSidebarProfileRow();
   hideLoginView();
 }
 
@@ -1672,6 +2028,7 @@ function configureInformaticaChrome() {
   el.demoInsightsToggleBtn.classList.add("hidden");
   el.demoInsightsDrawer.classList.add("hidden");
   el.demoFooter.classList.add("hidden");
+  updateSidebarProfileRow();
 }
 
 function configureVisitorChrome() {
@@ -1681,11 +2038,7 @@ function configureVisitorChrome() {
   state.bookings = [];
   if (el.workspaceMain) {
     el.workspaceMain.classList.add("is-visitor-mode");
-    el.workspaceMain.classList.remove("is-sidebar-collapsed");
   }
-  if (el.sidebarToggleBtn) el.sidebarToggleBtn.classList.add("hidden");
-  if (el.historySidebar) el.historySidebar.classList.remove("is-open-mobile");
-  if (el.historyDrawerBackdrop) el.historyDrawerBackdrop.classList.add("hidden");
   el.chatIdentityStrip.classList.add("hidden");
   el.guestPickerSection.classList.add("hidden");
   el.guestPickerDivider.classList.add("hidden");
@@ -1696,12 +2049,13 @@ function configureVisitorChrome() {
   el.demoInsightsToggleBtn.classList.add("hidden");
   el.demoInsightsDrawer.classList.add("hidden");
   el.demoFooter.classList.add("hidden");
-  el.headerGreeting.textContent = "Welcome, Guest";
+  updateSidebarProfileRow();
   closeDataDrawer();
 }
 
 function enterVisitorMode() {
   clearFollowupIdleTimer();
+  clearPendingAttachment();
   state.pendingSuggestedReplies = [];
   state.conversations = [];
   state.activeConversationId = null;
@@ -1709,8 +2063,8 @@ function enterVisitorMode() {
   state.history = [];
   state.uiMessages = [];
   state.isVisitor = true;
-  hideLoginView();
   configureVisitorChrome();
+  hideLoginView();
   renderEscalation(null);
   startNewConversation();
 }
@@ -1726,11 +2080,10 @@ function resetPasswordToggle() {
 
 function showLoginView(errorMsg = "") {
   state.isVisitor = false;
+  clearPendingAttachment();
   if (el.workspaceMain) el.workspaceMain.classList.remove("is-visitor-mode");
   el.infaLoginView.classList.remove("hidden");
   el.workspaceMain.classList.add("hidden");
-  if (el.sidebarToggleBtn) el.sidebarToggleBtn.classList.add("hidden");
-  if (el.topbarAccountDivider) el.topbarAccountDivider.classList.add("hidden");
   el.accountMenuBtn.classList.add("hidden");
   el.catalogTriggerBtn.classList.add("hidden");
   el.demoInsightsToggleBtn.classList.add("hidden");
@@ -1751,16 +2104,10 @@ function showLoginView(errorMsg = "") {
 function hideLoginView() {
   el.infaLoginView.classList.add("hidden");
   el.workspaceMain.classList.remove("hidden");
-  if (el.sidebarToggleBtn) {
-    el.sidebarToggleBtn.classList.toggle("hidden", state.isVisitor);
-  }
-  if (el.topbarAccountDivider) el.topbarAccountDivider.classList.remove("hidden");
   el.accountMenuBtn.classList.remove("hidden");
   el.catalogTriggerBtn.classList.remove("hidden");
   el.loginError.classList.add("hidden");
-  if (!state.isVisitor) {
-    applySidebarOpenState(getSavedSidebarOpen(), { persist: false });
-  }
+  applySidebarOpenState(getSavedSidebarOpen(), { persist: false });
 }
 
 function formatBookedOnDate(dateStr) {
@@ -1847,7 +2194,7 @@ function renderInformaticaMe(me) {
   state.rcycId = me.customer_id || "";
   state.bookings = Array.isArray(me.bookings) ? me.bookings : [];
 
-  el.headerGreeting.textContent = me.first_name ? `Welcome, ${me.first_name}` : "Welcome";
+  updateSidebarProfileRow();
   el.profileKicker.textContent = "Guest Details";
 
   const displayName = me.full_name || me.first_name || "";
@@ -1951,6 +2298,7 @@ function renderInformaticaMe(me) {
 function renderInformaticaWelcome(me, { isFreshLogin = false } = {}) {
   state.me = me;
   state.pendingDeleteConversationId = null;
+  updateSidebarProfileRow();
   if (me && me.customer_id) {
     state.conversations = loadConversationsForCustomer(me.customer_id);
     if (isFreshLogin) {
@@ -1993,6 +2341,7 @@ async function openYourDetailsDrawer() {
 
 function resetRuntimeSessionToLogin(errorMsg = "") {
   clearFollowupIdleTimer();
+  clearPendingAttachment();
   state.pendingSuggestedReplies = [];
   state.isVisitor = false;
   closeDataDrawer();
@@ -2009,38 +2358,84 @@ function resetRuntimeSessionToLogin(errorMsg = "") {
   showLoginView(errorMsg);
 }
 
-async function sendMessage(text) {
-  const trimmed = text.trim();
-  if (!trimmed || state.busy) return;
+function autoResizeMessageInput(textarea) {
+  if (!textarea) return;
+  textarea.style.height = "auto";
+  let lineHeight = 21;
+  let paddingTop = 0;
+  let paddingBottom = 0;
+  try {
+    if (typeof window !== "undefined" && typeof window.getComputedStyle === "function") {
+      const cs = window.getComputedStyle(textarea);
+      lineHeight = parseFloat(cs.lineHeight) || 21;
+      paddingTop = parseFloat(cs.paddingTop) || 0;
+      paddingBottom = parseFloat(cs.paddingBottom) || 0;
+    }
+  } catch (err) {
+    // Fallback to defaults
+  }
+  const maxHeight = Math.ceil(lineHeight * 5 + paddingTop + paddingBottom);
+  const nextHeight = Math.min(textarea.scrollHeight, maxHeight);
+  textarea.style.height = `${nextHeight}px`;
+  textarea.style.overflowY = textarea.scrollHeight > maxHeight ? "auto" : "hidden";
+}
 
+async function sendMessage(text, { focus = null } = {}) {
+  if (state.busy) return;
+  const attached = focus ? null : state.pendingAttachment;
+  const rawTrimmed = String(text ?? "").trim();
+  if (!rawTrimmed && !attached) return;
+
+  const messageText = rawTrimmed || "Please review the attached file.";
   const isFirstUserMessage = !hasSentUserMessage();
+  const isGreetingOnly = GREETING_MESSAGE_REGEX.test(messageText) && !focus && !attached;
 
   state.busy = true;
   el.sendBtn.disabled = true;
+  if (el.attachFileBtn) el.attachFileBtn.disabled = true;
   el.typingIndicator.classList.remove("is-idle");
   el.typingIndicator.setAttribute("aria-hidden", "false");
   hideChips({ clearPending: true });
+  removeWelcomeSection();
+  clearPendingAttachment();
 
-  appendMessage({ role: "user", content: trimmed });
+  appendMessage({
+    role: "user",
+    content: messageText,
+    attachmentName: attached ? attached.name : null,
+  });
   el.messageInput.value = "";
+  autoResizeMessageInput(el.messageInput);
   const targetConvId = state.activeConversationId;
 
   const triggerTitleOnce = () => {
     if (state.isVisitor || !isFirstUserMessage || !targetConvId) return;
     const targetConv = state.conversations.find((c) => c.id === targetConvId);
     if (!targetConv || targetConv.titleGenerated) return;
-    void requestConversationTitle(trimmed).then((generatedTitle) => {
+    const titleSeed = rawTrimmed || (attached ? `Attached file ${attached.name}` : messageText);
+    void requestConversationTitle(titleSeed).then((generatedTitle) => {
       setConversationTitleOnce(targetConvId, generatedTitle);
     });
   };
 
   let nextSuggestedReplies = [];
+  let shouldShowStartingChipsAfter = false;
 
   try {
     const bodyPayload =
       state.mode === "informatica"
-        ? { message: trimmed, history: state.history }
-        : { rcyc_id: state.rcycId, message: trimmed, history: state.history };
+        ? { message: messageText, history: state.history }
+        : { rcyc_id: state.rcycId, message: messageText, history: state.history };
+    if (focus) {
+      bodyPayload.focus = focus;
+    }
+    if (attached) {
+      bodyPayload.attachment = {
+        name: attached.name,
+        mime_type: attached.mime_type,
+        data_base64: attached.data_base64,
+      };
+    }
 
     const res = await apiFetch("/api/chat", {
       method: "POST",
@@ -2079,7 +2474,7 @@ async function sendMessage(text) {
       ...(data.referenced_voyages || []).map((v) => v.voyage_id),
     ];
 
-    state.history.push({ role: "user", content: trimmed, voyage_ids: [] });
+    state.history.push({ role: "user", content: messageText, voyage_ids: [] });
     state.history.push({ role: "assistant", content: data.reply, voyage_ids: voyageIds });
 
     if (state.mode === "informatica") {
@@ -2092,6 +2487,9 @@ async function sendMessage(text) {
     nextSuggestedReplies = Array.isArray(data.suggested_replies)
       ? data.suggested_replies.slice(0, 3)
       : [];
+    if (isGreetingOnly && !data.escalation?.escalated) {
+      shouldShowStartingChipsAfter = true;
+    }
 
     appendMessage({
       role: "assistant",
@@ -2110,10 +2508,15 @@ async function sendMessage(text) {
   } finally {
     state.busy = false;
     el.sendBtn.disabled = false;
+    if (el.attachFileBtn) el.attachFileBtn.disabled = false;
     el.typingIndicator.classList.add("is-idle");
     el.typingIndicator.setAttribute("aria-hidden", "true");
     el.chatMessages.scrollTop = el.chatMessages.scrollHeight;
-    scheduleFollowupChips(nextSuggestedReplies);
+    if (shouldShowStartingChipsAfter) {
+      showStartingChips();
+    } else {
+      scheduleFollowupChips(nextSuggestedReplies);
+    }
   }
 }
 
@@ -2221,7 +2624,7 @@ function toggleDemoInsights(forceState) {
   el.demoInsightsToggleBtn.setAttribute("aria-expanded", String(shouldOpen));
 }
 
-// Header Popover Controls
+// Sidebar Profile Popover Controls
 el.accountMenuBtn.addEventListener("click", (e) => {
   e.stopPropagation();
   const isHidden = el.accountPopover.classList.toggle("hidden");
@@ -2295,7 +2698,6 @@ el.popoverLogoutBtn.addEventListener("click", async (e) => {
   }
   clearSessionToken();
   el.loginPassword.value = "";
-  // Keep Customer ID conversations & user theme preference in localStorage on sign out
   resetRuntimeSessionToLogin();
 });
 
@@ -2419,9 +2821,10 @@ el.inlineLookupForm.addEventListener("submit", (e) => {
   }
 });
 
-// Theme Toggle & System Preference Sync
+// Theme Toggle (Inside Profile Popover) & System Preference Sync
 if (el.themeToggleBtn) {
-  el.themeToggleBtn.addEventListener("click", () => {
+  el.themeToggleBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
     const nextTheme = getCurrentTheme() === "dark" ? "light" : "dark";
     applyTheme(nextTheme, { persist: true });
   });
@@ -2453,10 +2856,6 @@ function initMobileDetailsState() {
   if (el.sidebarPanel) {
     el.sidebarPanel.classList.remove("is-collapsed-mobile");
   }
-  if (state.isVisitor) {
-    applySidebarOpenState(false, { persist: false });
-    return;
-  }
 
   if (mobileNow !== lastMobileViewport) {
     lastMobileViewport = mobileNow;
@@ -2468,14 +2867,60 @@ function initMobileDetailsState() {
 
 window.addEventListener("resize", initMobileDetailsState);
 
+// File Attachment Controls
+if (el.attachFileBtn && el.fileAttachInput) {
+  el.attachFileBtn.addEventListener("click", () => {
+    if (state.busy) return;
+    hideAttachmentError();
+    el.fileAttachInput.value = "";
+    el.fileAttachInput.click();
+  });
+  el.fileAttachInput.addEventListener("change", (e) => {
+    const file = e.target && e.target.files ? e.target.files[0] : null;
+    if (file) {
+      handleSelectedFile(file);
+    }
+  });
+}
+
+if (el.removeAttachmentBtn) {
+  el.removeAttachmentBtn.addEventListener("click", () => {
+    clearPendingAttachment();
+  });
+}
+
 // Chat & Modal Controls
+let isComposingInput = false;
+
 el.chatForm.addEventListener("submit", (e) => {
   e.preventDefault();
+  if (state.busy || isComposingInput) return;
+  if (!el.messageInput.value.trim() && !state.pendingAttachment) return;
   sendMessage(el.messageInput.value);
 });
 
 if (el.messageInput) {
+  el.messageInput.addEventListener("compositionstart", () => {
+    isComposingInput = true;
+  });
+  el.messageInput.addEventListener("compositionend", () => {
+    isComposingInput = false;
+    autoResizeMessageInput(el.messageInput);
+  });
+  el.messageInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      if (e.isComposing || isComposingInput || e.keyCode === 229) {
+        return;
+      }
+      e.preventDefault();
+      if (state.busy || (!el.messageInput.value.trim() && !state.pendingAttachment)) {
+        return;
+      }
+      sendMessage(el.messageInput.value);
+    }
+  });
   el.messageInput.addEventListener("input", () => {
+    autoResizeMessageInput(el.messageInput);
     if (!hasSentUserMessage()) return;
     hideChips({ clearPending: false });
     if (el.messageInput.value.trim() === "" && !state.busy && state.pendingSuggestedReplies.length > 0) {
@@ -2505,13 +2950,12 @@ if (el.newConversationBtn) {
 }
 if (el.sidebarToggleBtn) {
   el.sidebarToggleBtn.addEventListener("click", () => {
-    if (state.isVisitor) return;
     applySidebarOpenState(!state.sidebarOpen, { persist: true });
   });
 }
-if (el.closeHistoryDrawerBtn) {
-  el.closeHistoryDrawerBtn.addEventListener("click", () => {
-    applySidebarOpenState(false, { persist: true });
+if (el.openSidebarBtn) {
+  el.openSidebarBtn.addEventListener("click", () => {
+    applySidebarOpenState(true, { persist: true });
   });
 }
 if (el.historyDrawerBackdrop) {

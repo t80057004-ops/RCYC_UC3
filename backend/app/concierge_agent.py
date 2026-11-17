@@ -108,6 +108,27 @@ def _build_suggested_replies(
 ) -> list[str]:
     if escalation.escalated or intent == "refuse_other_guest":
         return []
+    if intent == "card_focus":
+        focus_voyages = [r.voyage for r in recommendations] if recommendations else referenced_voyages
+        if visitor_mode:
+            if focus_voyages:
+                return [
+                    f"Tell me more about {focus_voyages[0].voyage_name}",
+                    "Voyage Collection",
+                    "Sign in for personal help",
+                ]
+            return [
+                "Voyage Collection",
+                "Experience Ambassador",
+                "Sign in for personal help",
+            ]
+        if focus_voyages:
+            return [
+                f"Tell me more about {focus_voyages[0].voyage_name}",
+                "Best voyage for me",
+                "Speak to an Ambassador",
+            ]
+        return ["Best voyage for me", "My bookings", "Speak to an Ambassador"]
     if visitor_mode:
         if recommendations:
             return [
@@ -280,6 +301,42 @@ class ConciergeAgent:
         scored.sort(key=lambda r: (-r.score, r.voyage.price))
         return scored[:top_k]
 
+    def _select_diverse_voyages(
+        self,
+        voyages: list[Voyage],
+        limit: int = 3,
+        preferred_destinations: list[str] | None = None,
+    ) -> list[Voyage]:
+        """Pick up to `limit` voyages from distinct destinations first, then remaining matches."""
+        ordered = list(voyages)
+        if preferred_destinations:
+            pref_lower = [d.strip().lower() for d in preferred_destinations if d and d.strip()]
+            ordered.sort(
+                key=lambda v: (
+                    0 if v.destination.lower() in pref_lower else 1,
+                    pref_lower.index(v.destination.lower()) if v.destination.lower() in pref_lower else 999,
+                )
+            )
+
+        selected: list[Voyage] = []
+        seen_dests: set[str] = set()
+        seen_ids: set[str] = set()
+        for v in ordered:
+            if v.destination not in seen_dests:
+                selected.append(v)
+                seen_dests.add(v.destination)
+                seen_ids.add(v.voyage_id)
+            if len(selected) >= limit:
+                return selected
+
+        for v in ordered:
+            if v.voyage_id not in seen_ids:
+                selected.append(v)
+                seen_ids.add(v.voyage_id)
+            if len(selected) >= limit:
+                break
+        return selected
+
     def _is_other_guest_request(
         self,
         message: str,
@@ -409,7 +466,7 @@ class ConciergeAgent:
             )
 
         # 2. Greetings & Thanks — warm short reply, ZERO voyage recommendations
-        if GREETING_PATTERNS.match(request.message) or THANKS_PATTERNS.match(request.message):
+        if request.attachment is None and (GREETING_PATTERNS.match(request.message) or THANKS_PATTERNS.match(request.message)):
             intent = "greeting" if GREETING_PATTERNS.match(request.message) else "thanks"
             if consent_applied:
                 used_fields.append("first_name")
@@ -470,6 +527,88 @@ class ConciergeAgent:
                 recommendations=[],
                 referenced_voyages=[],
                 escalation=escalation,
+                llm_provider_used=provider_used,
+                llm_fallback_triggered=fallback,
+            )
+
+        # 3a. Structured Welcome Card Focus Selection (no LLM needed)
+        if request.focus is not None:
+            all_voyages = self.data_provider.listVoyages()
+            all_destinations = list(dict.fromkeys(v.destination for v in all_voyages))
+            focus_val = request.focus
+            focus_recs: list[VoyageRecommendation] = []
+            focus_refs: list[Voyage] = []
+
+            if focus_val == "voyages":
+                pref_dests = list(profile.preferred_destinations) if consent_applied else None
+                focus_refs = self._select_diverse_voyages(
+                    all_voyages,
+                    limit=3,
+                    preferred_destinations=pref_dests,
+                )
+                if consent_applied and profile.preferred_destinations:
+                    used_fields.append("preferred_destinations")
+            else:
+                if focus_val == "culinary":
+                    focus_tokens = ["culinary"]
+                elif focus_val == "wellness":
+                    focus_tokens = ["wellness"]
+                else:
+                    focus_tokens = ["adventure", "cultural"]
+
+                token_set = {t.lower() for t in focus_tokens}
+                filtered_voyages = [
+                    v
+                    for v in all_voyages
+                    if any(pf.lower() in token_set for pf in v.primary_focus)
+                ]
+
+                if consent_applied:
+                    focus_recs, rec_fields, consent_applied = recommend_voyages(
+                        profile=profile,
+                        voyages=filtered_voyages,
+                        query=request.message,
+                        focus_filter=focus_tokens,
+                        top_k=3,
+                    )
+                    used_fields.extend(rec_fields)
+                else:
+                    focus_refs = self._select_diverse_voyages(filtered_voyages, limit=3)
+
+            reply, provider_used, fallback = self.llm_engine.generate_reply(
+                profile=profile,
+                bookings=bookings if consent_applied else [],
+                intent="card_focus",
+                consent_applied=consent_applied,
+                recommendations=focus_recs,
+                referenced_voyages=focus_refs,
+                escalation=EscalationInfo(escalated=False),
+                user_message=request.message,
+                used_profile_fields=list(dict.fromkeys(used_fields)),
+                visitor_mode=visitor_mode,
+                card_focus=focus_val,
+                all_destinations=all_destinations,
+            )
+            sugs = _build_suggested_replies(
+                "card_focus",
+                focus_recs,
+                focus_refs,
+                EscalationInfo(escalated=False),
+                request.message,
+                visitor_mode=visitor_mode,
+            )
+            return ChatResponse(
+                reply=reply,
+                guest_profile=to_public_profile(profile),
+                bookings=bookings if consent_applied else [],
+                guest_recognized=guest_recognized,
+                guest_status=profile.guest_status,
+                consent_applied=consent_applied,
+                used_profile_fields=list(dict.fromkeys(used_fields)),
+                recommendations=focus_recs,
+                referenced_voyages=focus_refs,
+                suggested_replies=sugs,
+                escalation=EscalationInfo(escalated=False),
                 llm_provider_used=provider_used,
                 llm_fallback_triggered=fallback,
             )
@@ -834,6 +973,7 @@ class ConciergeAgent:
             user_message=request.message,
             used_profile_fields=used_fields,
             visitor_mode=visitor_mode,
+            attachment=request.attachment,
         )
 
         logger.info(

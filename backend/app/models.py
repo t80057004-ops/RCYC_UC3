@@ -2,8 +2,30 @@
 
 from __future__ import annotations
 
+import base64
+from pathlib import Path
 from typing import Literal
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+
+MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024  # 10 MB
+
+ATTACHMENT_EXTENSION_TO_MIME: dict[str, str] = {
+    ".pdf": "application/pdf",
+    ".txt": "text/plain",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+}
+
+AllowedAttachmentMime = Literal[
+    "application/pdf",
+    "text/plain",
+    "image/png",
+    "image/jpeg",
+    "image/webp",
+]
 
 
 GuestRecognitionStatus = Literal["returning", "new", "anonymous", "unknown"]
@@ -174,6 +196,52 @@ class ChatTurn(BaseModel):
     voyage_ids: list[str] = Field(default_factory=list)
 
 
+ChatFocus = Literal["voyages", "culinary", "wellness", "adventure_cultural"]
+
+
+class ChatAttachment(BaseModel):
+    """In-memory single file attachment sent to Gemini as inlineData (never persisted)."""
+
+    name: str = Field(..., min_length=1, max_length=255)
+    mime_type: AllowedAttachmentMime
+    data_base64: str = Field(..., min_length=1)
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, v: str) -> str:
+        clean = Path(str(v or "").strip()).name
+        ext = Path(clean).suffix.lower()
+        if ext not in ATTACHMENT_EXTENSION_TO_MIME:
+            raise ValueError("Unsupported file type. Allowed: .pdf, .txt, .png, .jpg, .jpeg, .webp.")
+        return clean
+
+    @field_validator("data_base64")
+    @classmethod
+    def validate_data_base64(cls, v: str) -> str:
+        compact = "".join(str(v or "").split())
+        if not compact:
+            raise ValueError("Attached file is empty.")
+        if len(compact) > 14_500_000:
+            raise ValueError("Attached file exceeds the 10 MB limit.")
+        try:
+            decoded = base64.b64decode(compact, validate=True)
+        except Exception as exc:
+            raise ValueError("Invalid base64 file content.") from exc
+        if not decoded:
+            raise ValueError("Attached file is empty.")
+        if len(decoded) > MAX_ATTACHMENT_BYTES:
+            raise ValueError("Attached file exceeds the 10 MB limit.")
+        return compact
+
+    @model_validator(mode="after")
+    def validate_extension_mime_match(self) -> "ChatAttachment":
+        ext = Path(self.name).suffix.lower()
+        expected_mime = ATTACHMENT_EXTENSION_TO_MIME.get(ext)
+        if expected_mime != self.mime_type:
+            raise ValueError("File extension does not match the attached MIME type.")
+        return self
+
+
 class ChatRequest(BaseModel):
     """Incoming chat message payload."""
 
@@ -181,8 +249,21 @@ class ChatRequest(BaseModel):
         default=None,
         description="Sample RCYC_ID or 'ANONYMOUS' / empty for visitor.",
     )
-    message: str = Field(..., min_length=1, max_length=2000)
+    message: str = Field(default="", max_length=2000)
     history: list[ChatTurn] = Field(default_factory=list)
+    focus: ChatFocus | None = Field(
+        default=None,
+        description="Optional card focus filter: 'voyages', 'culinary', 'wellness', or 'adventure_cultural'.",
+    )
+    attachment: ChatAttachment | None = None
+
+    @model_validator(mode="after")
+    def validate_message_or_attachment(self) -> "ChatRequest":
+        if self.attachment is None and len(self.message) < 1:
+            raise ValueError("String should have at least 1 character")
+        if self.attachment is not None and not self.message.strip():
+            self.message = "Please review the attached file."
+        return self
 
 
 class GuestContextResponse(BaseModel):

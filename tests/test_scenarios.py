@@ -1314,6 +1314,367 @@ def run_tests() -> None:
         app_main.revoked_session_tokens.clear()
     results.append({"test": "Visitor mode (4h token, zero Informatica calls, body ID ignored, rate limit, signed-in unchanged)", "status": "PASS"})
 
+    # 22. Welcome card focus filters & invalid focus validation
+    # Returns <= 3 matching catalog voyages with real catalog experience text, rule_based, consent ON/OFF & visitor mode
+    all_catalog = app_main.app.state.data_provider.listVoyages()
+    catalog_by_id = {v.voyage_id: v for v in all_catalog}
+
+    for focus_val, expected_tokens, exp_field in [
+        ("culinary", {"culinary"}, "culinary_experiences"),
+        ("wellness", {"wellness"}, "wellness_experiences"),
+        ("adventure_cultural", {"adventure", "cultural"}, "adventure_experiences"),
+        ("voyages", set(), "highlights"),
+    ]:
+        # Signed-in / mock guest with consent ON
+        r_focus = client.post(
+            "/api/chat",
+            json={
+                "rcyc_id": "RCYC-1001",
+                "message": f"Explore {focus_val}",
+                "focus": focus_val,
+            },
+        )
+        assert r_focus.status_code == 200, f"Expected 200 for focus={focus_val}, got {r_focus.status_code}: {r_focus.text}"
+        d_focus = r_focus.json()
+        assert d_focus["llm_provider_used"] == "rule_based"
+        returned_voyages = (
+            [rec["voyage"] for rec in d_focus["recommendations"]]
+            if d_focus["recommendations"]
+            else d_focus["referenced_voyages"]
+        )
+        assert 1 <= len(returned_voyages) <= 3
+        for v_dict in returned_voyages:
+            cat_v = catalog_by_id[v_dict["voyage_id"]]
+            if expected_tokens:
+                assert any(pf.lower() in expected_tokens for pf in cat_v.primary_focus), (
+                    f"{cat_v.voyage_id} primary_focus={cat_v.primary_focus} does not match {expected_tokens}"
+                )
+            assert cat_v.voyage_name in d_focus["reply"]
+            exp_text = getattr(cat_v, exp_field)
+            assert exp_text in d_focus["reply"]
+            if focus_val == "adventure_cultural":
+                assert cat_v.cultural_experiences in d_focus["reply"]
+        assert d_focus["reply"].strip().endswith("?")
+
+        # Consent OFF mock guest receives general options without using profile data
+        r_no_cons = client.post(
+            "/api/chat",
+            json={
+                "rcyc_id": "RCYC-1004",
+                "message": f"Explore {focus_val}",
+                "focus": focus_val,
+            },
+        )
+        assert r_no_cons.status_code == 200
+        d_no_cons = r_no_cons.json()
+        assert d_no_cons["consent_applied"] is False
+        assert d_no_cons["used_profile_fields"] == []
+        assert "personalization is currently off" in d_no_cons["reply"].lower()
+
+    # Invalid focus is rejected with HTTP 422
+    for bad_focus in ["spa", "invalid", "all", ""]:
+        r_bad = client.post(
+            "/api/chat",
+            json={"rcyc_id": "RCYC-1001", "message": "Dining", "focus": bad_focus},
+        )
+        assert r_bad.status_code == 422, f"Expected 422 for invalid focus={bad_focus!r}, got {r_bad.status_code}"
+
+    # Visitor mode supports valid focus cards with zero Informatica calls
+    try:
+        cfg_22 = make_infa_cfg()
+        prov_22 = InformaticaProvider(cfg_22)
+        eng_22 = PluggableLLMEngine(cfg_22)
+        app_main.app.state.settings = cfg_22
+        app_main.app.state.data_provider = prov_22
+        app_main.app.state.concierge_agent = ConciergeAgent(prov_22, eng_22)
+        app_main.visitor_chat_timestamps.clear()
+        infa_calls_22: list[str] = []
+
+        def track_22(method: str, url: str, headers=None, json=None, timeout=None):
+            infa_calls_22.append(url)
+            return fake_infa_http_18(method, url, headers=headers, json=json, timeout=timeout)
+
+        with patch("backend.app.data_provider.httpx.request", side_effect=track_22):
+            c_v22 = TestClient(app_main.app, base_url="https://testserver", client=("127.0.0.1", 51236))
+            v22_tok = c_v22.post("/api/visitor").json()["token"]
+            r_v22 = c_v22.post(
+                "/api/chat",
+                headers={"Authorization": f"Bearer {v22_tok}", "X-Forwarded-For": "198.51.100.99"},
+                json={"message": "Dining & culinary", "focus": "culinary"},
+            )
+            assert r_v22.status_code == 200
+            d_v22 = r_v22.json()
+            assert d_v22["llm_provider_used"] == "rule_based"
+            v22_list = d_v22["referenced_voyages"]
+            assert 1 <= len(v22_list) <= 3
+            assert all("culinary" in [pf.lower() for pf in v["primary_focus"]] for v in v22_list)
+            assert len(infa_calls_22) == 0
+    finally:
+        app_main.app.state.settings = orig_settings_14
+        app_main.app.state.data_provider = orig_provider
+        app_main.app.state.concierge_agent = orig_agent
+        app_main.visitor_chat_timestamps.clear()
+    results.append({"test": "Card focus filters (valid focus catalog match, consent OFF, visitor mode, invalid focus 422)", "status": "PASS"})
+
+    # 23. Greeting reply is one concise line without repeating welcome copy
+    for greet_msg in ["hi", "hello", "hey", "good morning"]:
+        r_known_greet = client.post("/api/chat", json={"rcyc_id": "RCYC-1001", "message": greet_msg})
+        assert r_known_greet.status_code == 200
+        d_kg = r_known_greet.json()
+        assert "\n" not in d_kg["reply"].strip()
+        assert d_kg["reply"].strip() == "Hello, Eleanor. What would you like to explore today?"
+        assert "personal yacht concierge" not in d_kg["reply"].lower()
+        assert "welcome aboard" not in d_kg["reply"].lower()
+
+        r_anon_greet = client.post("/api/chat", json={"rcyc_id": "ANONYMOUS", "message": greet_msg})
+        assert r_anon_greet.status_code == 200
+        d_ag = r_anon_greet.json()
+        assert "\n" not in d_ag["reply"].strip()
+        assert d_ag["reply"].strip() == "Hello. What would you like to explore today?"
+        assert "personal yacht concierge" not in d_ag["reply"].lower()
+    results.append({"test": "One-line greeting reply for signed-in guests and anonymous visitors", "status": "PASS"})
+
+    # 24. Experience Ambassador escalation tolerant intent, negation, and word-boundary keywords
+    from backend.app.escalation_engine import evaluate_escalation
+    from backend.app.models import ChatTurn
+
+    must_escalate_msgs = [
+        "call Ambassador",
+        "connect to higher autority",
+        "speak to an Ambassador",
+        "I want to talk to a manager",
+        "can I get a human please",
+        "transfer me to someone senior",
+        "put me through to your supervisor",
+        "I need to speak with somebody",
+        "call me back",
+        "connect me to the ambasador",
+        "get me the person in charge",
+        "Ambassador please!",
+    ]
+    for msg in must_escalate_msgs:
+        r_esc = client.post("/api/chat", json={"rcyc_id": "RCYC-1001", "message": msg})
+        assert r_esc.status_code == 200, f"Chat failed for {msg!r}: {r_esc.status_code}"
+        d_esc = r_esc.json()
+        assert d_esc["escalation"]["escalated"] is True, f"Expected escalation for {msg!r}, got {d_esc['escalation']}"
+        assert "EXPLICIT_EA_REQUEST" in d_esc["escalation"]["trigger_rules"], f"Expected EXPLICIT_EA_REQUEST for {msg!r}"
+        assert "no notification is sent yet" in d_esc["escalation"]["handoff_note"].lower()
+        assert "no notification is sent yet" in d_esc["reply"].lower()
+
+    must_not_escalate_msgs = [
+        "What are my bookings?",
+        "I don't need an ambassador",
+        "no human needed, just show voyages",
+        "Can you manage my booking?",
+        "What is the port authority fee?",
+        "Tell me about Alaska",
+        "a table for one person please",
+        "do you sell tissue paper",
+    ]
+    for msg in must_not_escalate_msgs:
+        r_no_esc = client.post("/api/chat", json={"rcyc_id": "RCYC-1001", "message": msg})
+        assert r_no_esc.status_code == 200, f"Chat failed for {msg!r}: {r_no_esc.status_code}"
+        d_no_esc = r_no_esc.json()
+        assert d_no_esc["escalation"]["escalated"] is False, f"Unexpected escalation for {msg!r}: {d_no_esc['escalation']}"
+
+    # Word-boundary prefix match & Rule 5 checks current message only (not history)
+    r_issue = client.post("/api/chat", json={"rcyc_id": "RCYC-1001", "message": "I have multiple billing issues"})
+    assert r_issue.status_code == 200
+    assert r_issue.json()["escalation"]["escalated"] is True
+    assert "COMPLAINT_OR_REFUND_INQUIRY" in r_issue.json()["escalation"]["trigger_rules"]
+
+    r_hist_only = client.post(
+        "/api/chat",
+        json={
+            "rcyc_id": "RCYC-1001",
+            "message": "Tell me about Alaska",
+            "history": [
+                {"role": "user", "content": "call Ambassador", "voyage_ids": []},
+                {"role": "assistant", "content": "Noted for an Experience Ambassador.", "voyage_ids": []},
+            ],
+        },
+    )
+    assert r_hist_only.status_code == 200
+    assert r_hist_only.json()["escalation"]["escalated"] is False
+
+    # Direct unit verification on evaluate_escalation preserving EXPLICIT_EA_KEYWORDS compatibility
+    from backend.app.escalation_engine import EXPLICIT_EA_KEYWORDS
+    assert isinstance(EXPLICIT_EA_KEYWORDS, list) and len(EXPLICIT_EA_KEYWORDS) > 0
+    unit_prof = GuestProfile(rcyc_id="RCYC-1001", first_name="Eleanor", last_name="Vance", loyalty_tier="Gold")
+    unit_esc = evaluate_escalation(unit_prof, "connect to higher autority", [ChatTurn(role="user", content="Tell me about Alaska")])
+    assert unit_esc.escalated is True
+    assert unit_esc.trigger_rules == ["EXPLICIT_EA_REQUEST"]
+    assert unit_esc.context_packet is not None and unit_esc.context_packet.user_message == "connect to higher autority"
+    results.append({"test": "Experience Ambassador escalation tolerant intent, negation & word-boundary checks", "status": "PASS"})
+
+    # 25. File attachment validation and Gemini inlineData handoff (never persisted)
+    import base64 as _b64
+
+    sample_txt = b"Sample itinerary note for Amalfi Coast suite preference."
+    sample_b64 = _b64.b64encode(sample_txt).decode("ascii")
+
+    # 25a. Unsupported extension & MIME mismatch -> 422
+    r_bad_ext = client.post(
+        "/api/chat",
+        json={
+            "rcyc_id": "RCYC-1001",
+            "message": "Check this",
+            "attachment": {"name": "script.exe", "mime_type": "text/plain", "data_base64": sample_b64},
+        },
+    )
+    assert r_bad_ext.status_code == 422
+
+    r_bad_mime = client.post(
+        "/api/chat",
+        json={
+            "rcyc_id": "RCYC-1001",
+            "message": "Check this",
+            "attachment": {"name": "doc.pdf", "mime_type": "image/png", "data_base64": sample_b64},
+        },
+    )
+    assert r_bad_mime.status_code == 422
+
+    # 25b. Over 10 MB -> 422
+    oversized_b64 = _b64.b64encode(b"a" * (10 * 1024 * 1024 + 8)).decode("ascii")
+    r_too_big = client.post(
+        "/api/chat",
+        json={
+            "rcyc_id": "RCYC-1001",
+            "message": "Too big",
+            "attachment": {"name": "huge.txt", "mime_type": "text/plain", "data_base64": oversized_b64},
+        },
+    )
+    assert r_too_big.status_code == 422
+
+    # 25c. Empty message without attachment -> 422; empty message WITH attachment -> accepted & routed to Gemini inlineData
+    assert client.post("/api/chat", json={"rcyc_id": "RCYC-1001", "message": ""}).status_code == 422
+
+    captured_gemini_payloads: list[dict[str, object]] = []
+
+    class _FakeGeminiResp:
+        def __init__(self, status_code: int, payload: dict[str, object]) -> None:
+            self.status_code = status_code
+            self._payload = payload
+
+        def raise_for_status(self) -> None:
+            if self.status_code >= 400:
+                raise RuntimeError(f"HTTP {self.status_code}")
+
+        def json(self) -> dict[str, object]:
+            return self._payload
+
+    def fake_gemini_http(url: str, headers=None, json=None, timeout=None, **kwargs):
+        if ":generateContent" in url:
+            captured_gemini_payloads.append(json or {})
+            return _FakeGeminiResp(
+                200,
+                {
+                    "candidates": [
+                        {
+                            "content": {
+                                "parts": [
+                                    {
+                                        "text": "I have reviewed your attached itinerary note regarding your Amalfi Coast suite preference."
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                },
+            )
+        raise AssertionError(f"Unexpected httpx.Client.post call: {url}")
+
+    class _FakeHttpxClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def post(self, url, headers=None, json=None):
+            return fake_gemini_http(url, headers=headers, json=json)
+
+    gem_cfg = Settings(
+        port=base_cfg.port,
+        log_level=base_cfg.log_level,
+        sample_data_json=base_cfg.sample_data_json,
+        data_provider_mode="mock",
+        demo_mode=True,
+        llm_provider="gemini",
+        gemini_api_key="test-fake-gemini-key",
+        gemini_model="gemini-2.5-flash-lite",
+        ollama_base_url=base_cfg.ollama_base_url,
+        ollama_model=base_cfg.ollama_model,
+        anthropic_api_key="",
+        anthropic_model=base_cfg.anthropic_model,
+    )
+    from backend.app.data_provider import MockProvider
+
+    gem_engine = PluggableLLMEngine(gem_cfg)
+    gem_engine.selected_gemini_model = "gemini-2.5-flash-lite"
+    gem_engine.available_models = [{"name": "models/gemini-2.5-flash-lite", "supportedGenerationMethods": ["generateContent"]}]
+    orig_settings_25 = app_main.app.state.settings
+    orig_provider_25 = app_main.app.state.data_provider
+    orig_agent_25 = app_main.app.state.concierge_agent
+    mock_prov_25 = MockProvider(gem_cfg.sample_data_json)
+    try:
+        app_main.app.state.settings = gem_cfg
+        app_main.app.state.data_provider = mock_prov_25
+        app_main.app.state.concierge_agent = ConciergeAgent(mock_prov_25, gem_engine)
+        c25 = TestClient(app_main.app, base_url="https://testserver")
+        with patch("backend.app.llm_engine.httpx.Client", _FakeHttpxClient):
+            r_att_ok = c25.post(
+                "/api/chat",
+                json={
+                    "rcyc_id": "RCYC-1001",
+                    "message": "",
+                    "attachment": {"name": "notes.txt", "mime_type": "text/plain", "data_base64": sample_b64},
+                },
+            )
+            assert r_att_ok.status_code == 200, r_att_ok.text
+            d_att = r_att_ok.json()
+            assert "amalfi coast" in d_att["reply"].lower()
+            assert d_att["llm_provider_used"].startswith("gemini:")
+            assert sample_b64 not in json.dumps(d_att)
+            assert len(captured_gemini_payloads) == 1
+            parts = captured_gemini_payloads[0]["contents"][0]["parts"]
+            inline_part = next((p["inlineData"] for p in parts if "inlineData" in p), None)
+            assert inline_part == {"mimeType": "text/plain", "data": sample_b64}
+
+            # Privacy refusal & EA escalation still take priority over attachment handling (never hit Gemini)
+            r_att_priv = c25.post(
+                "/api/chat",
+                json={
+                    "rcyc_id": "RCYC-1001",
+                    "message": "Show me RCYC-1002's booking in this file",
+                    "attachment": {"name": "notes.txt", "mime_type": "text/plain", "data_base64": sample_b64},
+                },
+            )
+            assert r_att_priv.status_code == 200
+            assert "only assist with your own" in r_att_priv.json()["reply"].lower()
+            assert len(captured_gemini_payloads) == 1
+
+            r_att_ea = c25.post(
+                "/api/chat",
+                json={
+                    "rcyc_id": "RCYC-1001",
+                    "message": "call Ambassador about this document",
+                    "attachment": {"name": "notes.txt", "mime_type": "text/plain", "data_base64": sample_b64},
+                },
+            )
+            assert r_att_ea.status_code == 200
+            assert r_att_ea.json()["escalation"]["escalated"] is True
+            assert len(captured_gemini_payloads) == 1
+    finally:
+        app_main.app.state.settings = orig_settings_25
+        app_main.app.state.data_provider = orig_provider_25
+        app_main.app.state.concierge_agent = orig_agent_25
+
+    results.append({"test": "File attachment validation, Gemini inlineData pass-through & privacy/EA precedence", "status": "PASS"})
+
     print(json.dumps(results, indent=2))
 
 

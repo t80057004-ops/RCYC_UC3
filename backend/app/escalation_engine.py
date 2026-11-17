@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+from backend.app.ea_intent import has_keyword, wants_human
 from backend.app.models import (
     ChatTurn,
     EscalationContextPacket,
@@ -83,6 +84,7 @@ MEDICAL_ACCESSIBILITY_KEYWORDS = [
     "severe allergy",
     "allergy",
     "allergies",
+    "allergic",
     "anaphylaxis",
     "epipen",
     "wheelchair",
@@ -101,7 +103,6 @@ def evaluate_escalation(
     history: list[ChatTurn],
 ) -> EscalationInfo:
     """Evaluate all 5 RCYC Experience Ambassador escalation rules."""
-    lowered = message.lower()
     triggered_rules: list[str] = []
     reasons: list[str] = []
 
@@ -111,24 +112,24 @@ def evaluate_escalation(
         reasons.append("Guest has an open service inquiry on file requiring Experience Ambassador follow-up.")
 
     # Rule 2: Refunds, complaints, problems, or dissatisfaction in message
-    if any(kw in lowered for kw in COMPLAINT_KEYWORDS):
+    if has_keyword(message, COMPLAINT_KEYWORDS):
         triggered_rules.append("COMPLAINT_OR_REFUND_INQUIRY")
         reasons.append("Guest raised a refund, service concern, or dissatisfaction inquiry.")
 
     # Rule 3: VIP guest requesting a complex or customized arrangement (generic reason only)
-    if profile.vip_status and any(kw in lowered for kw in VIP_COMPLEX_KEYWORDS):
+    if profile.vip_status and has_keyword(message, VIP_COMPLEX_KEYWORDS):
         triggered_rules.append("VIP_CUSTOM_ARRANGEMENT")
         reasons.append("Guest requested a bespoke or multi-party private arrangement.")
 
     # Rule 4: Medical emergencies, serious allergies, or accessibility arrangements requiring human coordination
-    if any(kw in lowered for kw in MEDICAL_ACCESSIBILITY_KEYWORDS):
+    if has_keyword(message, MEDICAL_ACCESSIBILITY_KEYWORDS):
         triggered_rules.append("MEDICAL_ALLERGY_OR_ACCESSIBILITY")
         reasons.append(
             "Inquiry involves medical, severe allergy, or specialized accessibility coordination."
         )
 
-    # Rule 5: Explicit request for an Experience Ambassador
-    if any(kw in lowered for kw in EXPLICIT_EA_KEYWORDS):
+    # Rule 5: Explicit request for an Experience Ambassador (checks last guest message only)
+    if wants_human(message):
         triggered_rules.append("EXPLICIT_EA_REQUEST")
         reasons.append("Guest explicitly requested to speak with an Experience Ambassador.")
 
