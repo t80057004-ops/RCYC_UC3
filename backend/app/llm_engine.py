@@ -28,6 +28,10 @@ RULE_ONLY_INTENTS = {
     "visitor_clarify",
     "suite_catalog",
     "catalog_overview",
+    "superlative_compare",
+    "catalog_attribute",
+    "similar_voyages",
+    "clarify_voyage",
     "escalation",
     "complaint",
     "refund",
@@ -37,6 +41,33 @@ RULE_ONLY_INTENTS = {
     "human_escalation",
     "card_focus",
 }
+
+_CLARIFYING_FALLBACKS = (
+    "Could you share which destination region, yacht, or itinerary detail you would like help with?",
+    "Are you looking to compare catalog voyages by price or nights, check a specific itinerary, or review your bookings?",
+    "Which sailing region or yacht—Evrima, Ilma, or Luminara—would you like to explore next?",
+    "Would you like help checking a voyage's ports, suites, duration in nights, or connecting with an Experience Ambassador?",
+)
+
+_VISITOR_CLARIFYING_FALLBACKS = (
+    "Could you share which destination region, yacht, or onboard experience from our Voyage Collection you would like to explore? You can also speak with an **Experience Ambassador** or **sign in**.",
+    "Are you looking to compare voyages by region, fare, or length in nights—or would you prefer to browse our **Voyage Collection**, speak with an **Experience Ambassador**, or **sign in**?",
+    "Which region interests you most—Mediterranean, Caribbean, Alaska, Northern Europe, Asia, or Antarctica—or would you like to browse our **Voyage Collection**?",
+    "Would you like to ask about suites, dining, or shore excursions from our catalog, speak with an **Experience Ambassador**, or **sign in** for personal booking help?",
+)
+
+_UNKNOWN_GUEST_FALLBACKS = (
+    "I could not verify that ID in our sample directory. Which destination or catalog voyage would you like to ask about, or would you like to select a sample guest?",
+    "That ID wasn't found in our sample directory, though I can still share public catalog details—which region, yacht, or itinerary interests you?",
+)
+
+
+def _pick_non_repeating(candidates: tuple[str, ...], previous_text: str = "") -> str:
+    prev_norm = re.sub(r"\s+", " ", str(previous_text or "").strip().lower())
+    for cand in candidates:
+        if re.sub(r"\s+", " ", cand.strip().lower()) != prev_norm:
+            return cand
+    return candidates[0]
 
 
 def _strip_models_prefix(model_name: str) -> str:
@@ -157,6 +188,9 @@ def build_rule_based_reply(
     all_destinations: list[str] | None = None,
     attachment: ChatAttachment | None = None,
     yacht_context: dict[str, Any] | None = None,
+    followup_context: dict[str, Any] | None = None,
+    previous_assistant_text: str = "",
+    is_fallback: bool = False,
 ) -> str:
     """Deterministic, warm MARIS response strictly grounded in catalog and profile records."""
     known_guest = (not visitor_mode) and profile.guest_status in {"returning", "new"}
@@ -522,6 +556,131 @@ def build_rule_based_reply(
         lines = [_yacht_bullet(v) for v in referenced_voyages]
         return f"{intro}\n\n" + "\n".join(lines) + visitor_footer
 
+    if intent == "clarify_voyage":
+        ctx = followup_context or {}
+        candidates = list(ctx.get("candidates") or referenced_voyages)
+        if len(candidates) >= 2:
+            if len(candidates) == 2:
+                choices = f"**{candidates[0].voyage_name}** or **{candidates[1].voyage_name}**"
+            else:
+                choices = (
+                    ", ".join(f"**{v.voyage_name}**" for v in candidates[:-1])
+                    + f", or **{candidates[-1].voyage_name}**"
+                )
+            return f"Which voyage did you have in mind — {choices}?"
+        if len(candidates) == 1:
+            return f"Did you mean **{candidates[0].voyage_name}** (`{candidates[0].voyage_id}`)?"
+        return _pick_non_repeating(
+            _VISITOR_CLARIFYING_FALLBACKS if visitor_mode else _CLARIFYING_FALLBACKS,
+            previous_assistant_text,
+        )
+
+    if intent == "superlative_compare" and referenced_voyages:
+        ctx = followup_context or {}
+        label = str(ctx.get("label") or "matching")
+        scope_note = str(ctx.get("scope_note") or "From those voyages")
+        visitor_footer = (
+            "\n\nYou can also browse the **Voyage Collection**, speak with an **Experience Ambassador**, or **sign in** for bookings and personalized help."
+            if visitor_mode
+            else ""
+        )
+        if len(referenced_voyages) == 1:
+            v = referenced_voyages[0]
+            return (
+                f"{scope_note}, the {label} voyage is **{v.voyage_name}** (`{v.voyage_id}`) — "
+                f"from **{_format_currency(v.price)}** per guest for **{v.duration} nights** "
+                f"aboard **{v.yacht_name}** ({v.destination}, {v.season})."
+                f"{visitor_footer}"
+            )
+        lines = [
+            f"- **{v.voyage_name}** (`{v.voyage_id}`, {v.yacht_name}): **{v.duration} nights** · From **{_format_currency(v.price)}** per guest · {v.destination} ({v.season})"
+            for v in referenced_voyages
+        ]
+        return (
+            f"{scope_note}, the {label} options are:\n\n"
+            + "\n".join(lines)
+            + visitor_footer
+        )
+
+    if intent == "similar_voyages":
+        ctx = followup_context or {}
+        discussed_names = list(ctx.get("discussed_names") or [])
+        visitor_footer = (
+            "\n\nYou can also browse our **Voyage Collection**, speak with an **Experience Ambassador**, or **sign in** for personalized assistance."
+            if visitor_mode
+            else ""
+        )
+        if not referenced_voyages:
+            return (
+                "I couldn't find other voyages in our catalog matching that region or duration."
+                + visitor_footer
+            )
+        if discussed_names:
+            discussed_label = " and ".join(f"**{name}**" for name in discussed_names)
+            intro = f"Aside from {discussed_label}, here are similar voyages from our catalog matching the region or duration:"
+        else:
+            intro = "Here are similar voyages from our catalog:"
+        lines = [
+            f"- **{v.voyage_name}** (`{v.voyage_id}`, {v.yacht_name}): {v.destination} · **{v.duration} nights** · {v.season} · From **{_format_currency(v.price)}** per guest"
+            for v in referenced_voyages
+        ]
+        return f"{intro}\n\n" + "\n".join(lines) + visitor_footer
+
+    if intent == "catalog_attribute" and referenced_voyages:
+        ctx = followup_context or {}
+        attrs = list(ctx.get("attrs") or [])
+        visitor_footer = (
+            "\n\nYou can also browse the **Voyage Collection**, speak with an **Experience Ambassador**, or **sign in** for bookings and personalized help."
+            if visitor_mode
+            else ""
+        )
+
+        def _embark_port(v: Voyage) -> str:
+            ports = [p.strip() for p in re.split(r"\s*·\s*", v.itinerary_ports or "") if p.strip()]
+            return ports[0] if ports else "not specified in the catalog"
+
+        def _format_single_attr(v: Voyage, attr: str) -> str:
+            if attr == "duration":
+                return f"**{v.voyage_name}** (`{v.voyage_id}`) is **{v.duration} nights** aboard **{v.yacht_name}** ({v.season})."
+            if attr == "price":
+                return f"**{v.voyage_name}** (`{v.voyage_id}`) starts from **{_format_currency(v.price)}** per guest ({v.duration} nights, {v.season})."
+            if attr == "embarkation":
+                emb = _embark_port(v)
+                return f"The embarkation port (first listed port) for **{v.voyage_name}** (`{v.voyage_id}`) is **{emb}** (full itinerary: {v.itinerary_ports})."
+            if attr == "destinations":
+                return f"**{v.voyage_name}** (`{v.voyage_id}`) sails the **{v.destination}** region and calls at: **{v.itinerary_ports}**."
+            if attr == "ship":
+                return f"**{v.voyage_name}** (`{v.voyage_id}`) sails aboard **{v.yacht_name}**."
+            if attr == "season":
+                return f"**{v.voyage_name}** (`{v.voyage_id}`) is listed for **{v.season}** ({v.duration} nights; exact departure dates are not listed in the catalog beyond the season)."
+            if attr == "suites":
+                return f"Suite categories listed for **{v.voyage_name}** (`{v.voyage_id}`, {v.yacht_name}) include: **{v.suite_availability}**."
+            return f"**{v.voyage_name}** (`{v.voyage_id}`): {v.destination} · **{v.duration} nights** · From **{_format_currency(v.price)}** per guest ({v.yacht_name}, {v.season})."
+
+        if len(referenced_voyages) == 1 and len(attrs) == 1:
+            return _format_single_attr(referenced_voyages[0], attrs[0]) + visitor_footer
+
+        sections: list[str] = []
+        for v in referenced_voyages:
+            facts_parts: list[str] = []
+            for a in (attrs or ["duration", "price"]):
+                if a == "duration":
+                    facts_parts.append(f"**{v.duration} nights**")
+                elif a == "price":
+                    facts_parts.append(f"From **{_format_currency(v.price)}** per guest")
+                elif a == "embarkation":
+                    facts_parts.append(f"Embarkation port: **{_embark_port(v)}** (itinerary: {v.itinerary_ports})")
+                elif a == "destinations":
+                    facts_parts.append(f"Region: **{v.destination}** · Ports: {v.itinerary_ports}")
+                elif a == "ship":
+                    facts_parts.append(f"Yacht: **{v.yacht_name}**")
+                elif a == "season":
+                    facts_parts.append(f"Season: **{v.season}**")
+                elif a == "suites":
+                    facts_parts.append(f"Suites: {v.suite_availability}")
+            sections.append(f"- **{v.voyage_name}** (`{v.voyage_id}`, {v.yacht_name}): " + " · ".join(facts_parts))
+        return "\n".join(sections) + visitor_footer
+
     if intent == "card_focus":
         focus_voyages = (
             [r.voyage for r in recommendations[:3]]
@@ -650,7 +809,7 @@ def build_rule_based_reply(
             "Please share the key details in a message and I will gladly help."
         )
 
-    if intent == "general" and referenced_voyages:
+    if intent == "general" and referenced_voyages and not is_fallback:
         lowered_msg = user_message.lower()
         matching = [
             v
@@ -680,21 +839,12 @@ def build_rule_based_reply(
         )
 
     if visitor_mode:
-        return (
-            "I would be glad to help you explore our **Voyage Collection** across the Mediterranean, Caribbean, Alaska, "
-            "Northern Europe, Asia, and Antarctica—including suites, dining, spa & wellness, and shore excursions. "
-            "You can also speak with an **Experience Ambassador** or **sign in** for bookings and personalized assistance."
-        )
+        return _pick_non_repeating(_VISITOR_CLARIFYING_FALLBACKS, previous_assistant_text)
 
     if profile.guest_status == "unknown":
-        return (
-            "I could not verify that ID in our sample directory. You may select a sample guest from Demo mode or ask about our destinations and voyages."
-        )
+        return _pick_non_repeating(_UNKNOWN_GUEST_FALLBACKS, previous_assistant_text)
 
-    return (
-        f"I would be pleased to help{salutation_name}. You can ask me for personalized voyage recommendations, "
-        "explore Mediterranean, Caribbean, Alaska, Northern Europe, Asia, or Antarctica itineraries, check your bookings on file, or connect with an Experience Ambassador."
-    )
+    return _pick_non_repeating(_CLARIFYING_FALLBACKS, previous_assistant_text)
 
 
 class PluggableLLMEngine:
@@ -736,6 +886,10 @@ class PluggableLLMEngine:
         all_destinations: list[str] | None = None,
         attachment: ChatAttachment | None = None,
         yacht_context: dict[str, Any] | None = None,
+        followup_context: dict[str, Any] | None = None,
+        previous_assistant_text: str = "",
+        recent_messages: list[dict[str, str]] | None = None,
+        is_fallback: bool = False,
     ) -> tuple[str, str, bool]:
         """Generate grounded response. Falls back silently to rule_based on any failure."""
         rule_reply = build_rule_based_reply(
@@ -755,10 +909,13 @@ class PluggableLLMEngine:
             all_destinations=all_destinations,
             attachment=attachment,
             yacht_context=yacht_context,
+            followup_context=followup_context,
+            previous_assistant_text=previous_assistant_text,
+            is_fallback=is_fallback,
         )
 
         # Deterministic safety, privacy, booking, contact, complaint, refund, medical,
-        # dietary, accessibility, visitor clarifying/sign-in, and escalation turns NEVER call Gemini.
+        # dietary, accessibility, visitor clarifying/sign-in, comparator, attribute, and escalation turns NEVER call Gemini.
         if escalation.escalated or intent in RULE_ONLY_INTENTS:
             return rule_reply, "rule_based", False
 
@@ -775,6 +932,8 @@ class PluggableLLMEngine:
             user_message=user_message,
             attachment=attachment,
             yacht_context=yacht_context,
+            recent_messages=recent_messages,
+            is_fallback=is_fallback,
         )
 
         if provider == "gemini":
@@ -786,7 +945,17 @@ class PluggableLLMEngine:
                 )
                 if text:
                     text = _clean_catalog_reply(text)
-                    if (not visitor_mode) and profile.guest_status in {"returning", "new"} and not consent_applied:
+                    if is_fallback and previous_assistant_text and (
+                        re.sub(r"\s+", " ", text.strip().lower())
+                        == re.sub(r"\s+", " ", previous_assistant_text.strip().lower())
+                    ):
+                        return rule_reply, "rule_based", False
+                    if (
+                        (not visitor_mode)
+                        and profile.guest_status in {"returning", "new"}
+                        and not consent_applied
+                        and not (is_fallback and "don't have that detail" in text.lower())
+                    ):
                         if "personalization is currently off" not in text.lower():
                             text = (
                                 "Personalization is currently off on your profile, so I am sharing general voyage options from our catalog without using your personal history:\n\n"
@@ -834,6 +1003,8 @@ class PluggableLLMEngine:
         user_message: str,
         attachment: ChatAttachment | None = None,
         yacht_context: dict[str, Any] | None = None,
+        recent_messages: list[dict[str, str]] | None = None,
+        is_fallback: bool = False,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "user_message": user_message,
@@ -873,6 +1044,12 @@ class PluggableLLMEngine:
             payload["yacht_context"] = yacht_context
         if consent_applied and profile.first_name:
             payload["first_name"] = profile.first_name
+        if is_fallback:
+            payload["recent_messages"] = list(recent_messages or [])[-8:]
+            payload["instruction"] = (
+                "Answer only from the provided catalog_voyages and recent_messages. "
+                "If the answer is not in the provided data, say \"I don't have that detail\"."
+            )
         if attachment is not None:
             payload["attached_file"] = {
                 "name": attachment.name,
@@ -891,7 +1068,8 @@ class PluggableLLMEngine:
             "4. Do NOT include any numeric match scores or technical labels like 'rule_based' or 'Guest 360'. "
             "5. If first_name is absent from the JSON, do not address the guest by name. "
             "6. Do NOT open with 'Welcome aboard' or repetitive greetings; answer directly, use '- ' for bullets, and avoid stray asterisks. "
-            "7. If an attached file (PDF, text, or image) is included in the user message, read and describe/answer about that attached file accurately while still enforcing all privacy and catalog grounding rules."
+            "7. If an attached file (PDF, text, or image) is included in the user message, read and describe/answer about that attached file accurately while still enforcing all privacy and catalog grounding rules. "
+            "8. If answering an ununderstood question with instruction/recent_messages provided, answer ONLY from catalog_voyages and recent_messages and say \"I don't have that detail\" otherwise."
         )
 
     def _call_gemini(self, facts: dict[str, Any], attachment: ChatAttachment | None = None) -> str:

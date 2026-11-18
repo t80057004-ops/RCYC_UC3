@@ -163,6 +163,13 @@ const state = {
   conversations: [],
   activeConversationId: null,
   pendingDeleteConversationId: null,
+  openRowMenuConversationId: null,
+  renamingConversationId: null,
+  renameError: "",
+  historySearchQuery: "",
+  searchDebounceTimer: null,
+  conversationsFetchSeq: 0,
+  autoScrollPinned: true,
   sidebarOpen: true,
   history: [],
   uiMessages: [],
@@ -188,6 +195,8 @@ const el = {
   historyDrawerBackdrop: document.getElementById("historyDrawerBackdrop"),
   historySidebar: document.getElementById("historySidebar"),
   newConversationBtn: document.getElementById("newConversationBtn"),
+  historySearchWrap: document.getElementById("historySearchWrap"),
+  historySearchInput: document.getElementById("historySearchInput"),
   historyList: document.getElementById("historyList"),
   sidebarProfileAvatar: document.getElementById("sidebarProfileAvatar"),
   sidebarProfileName: document.getElementById("sidebarProfileName"),
@@ -208,6 +217,7 @@ const el = {
   popoverMyProfileBtn: document.getElementById("popoverMyProfileBtn"),
   popoverSwitchAnonBtn: document.getElementById("popoverSwitchAnonBtn"),
   popoverVisitorSignInBtn: document.getElementById("popoverVisitorSignInBtn"),
+  accountActionDivider: document.getElementById("accountActionDivider"),
   popoverLogoutBtn: document.getElementById("popoverLogoutBtn"),
   conciergeStatusIndicator: document.getElementById("conciergeStatusIndicator"),
   conciergeStatusText: document.getElementById("conciergeStatusText"),
@@ -337,8 +347,69 @@ function getCurrentTheme() {
   return "light";
 }
 
+const SHORT_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+function formatMessageTimestamp(isoOrDate, nowInput = new Date()) {
+  const now = nowInput instanceof Date ? nowInput : new Date(nowInput);
+  let dt = null;
+  if (isoOrDate instanceof Date) {
+    dt = isoOrDate;
+  } else if (typeof isoOrDate === "number" && Number.isFinite(isoOrDate)) {
+    dt = new Date(isoOrDate);
+  } else if (typeof isoOrDate === "string" && isoOrDate.trim()) {
+    const trimmed = isoOrDate.trim();
+    if (/^\d{1,2}:\d{2}$/.test(trimmed)) {
+      return trimmed.padStart(5, "0");
+    }
+    const parsed = new Date(trimmed);
+    if (!Number.isNaN(parsed.getTime())) {
+      dt = parsed;
+    } else {
+      return trimmed;
+    }
+  }
+  if (!dt || Number.isNaN(dt.getTime())) {
+    dt = now;
+  }
+  const hh = String(dt.getHours()).padStart(2, "0");
+  const mm = String(dt.getMinutes()).padStart(2, "0");
+  const hhmm = `${hh}:${mm}`;
+  const isToday =
+    dt.getFullYear() === now.getFullYear() &&
+    dt.getMonth() === now.getMonth() &&
+    dt.getDate() === now.getDate();
+  if (isToday) {
+    return hhmm;
+  }
+  const mon = SHORT_MONTHS[dt.getMonth()];
+  const day = dt.getDate();
+  if (dt.getFullYear() === now.getFullYear()) {
+    return `${mon} ${day}, ${hhmm}`;
+  }
+  return `${mon} ${day}, ${dt.getFullYear()} ${hhmm}`;
+}
+
 function currentTimeStr() {
-  return new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  return formatMessageTimestamp(new Date());
+}
+
+function isChatNearBottom(thresholdPx = 80) {
+  if (!el.chatMessages) return true;
+  const scrollH = Number(el.chatMessages.scrollHeight) || 0;
+  const scrollT = Number(el.chatMessages.scrollTop) || 0;
+  const clientH = Number(el.chatMessages.clientHeight) || 0;
+  if (scrollH <= clientH) return true;
+  return scrollH - scrollT - clientH <= thresholdPx;
+}
+
+function scrollChatToBottom({ force = false } = {}) {
+  if (!el.chatMessages) return;
+  if (force) {
+    state.autoScrollPinned = true;
+  }
+  if (force || state.autoScrollPinned) {
+    el.chatMessages.scrollTop = el.chatMessages.scrollHeight;
+  }
 }
 
 function safeStorageGet(key) {
@@ -404,6 +475,17 @@ function safeSessionSet(key, value) {
   return false;
 }
 
+function safeSessionRemove(key) {
+  memorySessionStore.delete(key);
+  try {
+    if (typeof window !== "undefined" && window.sessionStorage) {
+      window.sessionStorage.removeItem(key);
+    }
+  } catch (err) {
+    // Ignore storage access errors
+  }
+}
+
 function getSessionToken() {
   try {
     if (typeof window === "undefined" || !window.sessionStorage) return "";
@@ -448,6 +530,70 @@ function apiFetch(url, options = {}) {
   });
 }
 
+function isServerHistoryMode() {
+  return state.mode === "informatica" && !state.isVisitor && Boolean(state.me && state.me.customer_id);
+}
+
+function clearStorageKeysByPrefixes(storageObj, prefixes) {
+  if (!storageObj) return;
+  try {
+    if (typeof storageObj.length === "number" && typeof storageObj.key === "function") {
+      const keysToDelete = [];
+      for (let i = 0; i < storageObj.length; i += 1) {
+        const k = storageObj.key(i);
+        if (k && prefixes.some((p) => k.startsWith(p))) {
+          keysToDelete.push(k);
+        }
+      }
+      for (const k of keysToDelete) {
+        storageObj.removeItem(k);
+      }
+    }
+  } catch (err) {
+    // Ignore enumeration failure
+  }
+}
+
+function clearAllBrowserConversationData() {
+  const prefixes = [
+    CHAT_STORAGE_PREFIX,
+    CONVERSATIONS_STORAGE_PREFIX,
+    ACTIVE_CONVERSATION_PREFIX,
+    ACTIVE_MOCK_GUEST_KEY,
+  ];
+  for (const key of [...memoryConversationsStore.keys()]) {
+    if (prefixes.some((p) => key.startsWith(p))) {
+      memoryConversationsStore.delete(key);
+    }
+  }
+  for (const key of [...memorySessionStore.keys()]) {
+    if (prefixes.some((p) => key.startsWith(p))) {
+      memorySessionStore.delete(key);
+    }
+  }
+  if (typeof window !== "undefined") {
+    clearStorageKeysByPrefixes(window.localStorage, prefixes);
+    clearStorageKeysByPrefixes(window.sessionStorage, prefixes);
+  }
+  clearSavedActiveConversationId();
+  if (state.searchDebounceTimer !== null) {
+    clearTimeout(state.searchDebounceTimer);
+    state.searchDebounceTimer = null;
+  }
+  state.conversations = [];
+  state.activeConversationId = null;
+  state.pendingDeleteConversationId = null;
+  state.openRowMenuConversationId = null;
+  state.renamingConversationId = null;
+  state.renameError = "";
+  state.historySearchQuery = "";
+  state.history = [];
+  state.uiMessages = [];
+  if (el.historySearchInput) el.historySearchInput.value = "";
+  if (el.historyList) el.historyList.innerHTML = "";
+  if (el.chatMessages) el.chatMessages.innerHTML = "";
+}
+
 function getLegacyChatStorageKey(sessionIdOverride = null) {
   const rawId = sessionIdOverride ?? state.rcycId ?? (state.mode === "informatica" ? "" : "ANONYMOUS");
   const normalizedId = String(rawId || "").trim().toUpperCase();
@@ -473,7 +619,7 @@ function getSavedActiveConversationId(sessionIdOverride = null) {
   if (state.isVisitor) return null;
   const key = getActiveConversationStorageKey(sessionIdOverride);
   if (!key) return null;
-  const val = safeStorageGet(key);
+  const val = state.mode === "informatica" ? safeSessionGet(key) : safeStorageGet(key);
   return val && val.trim() ? val.trim() : null;
 }
 
@@ -481,6 +627,14 @@ function setSavedActiveConversationId(conversationId, sessionIdOverride = null) 
   if (state.isVisitor) return;
   const key = getActiveConversationStorageKey(sessionIdOverride);
   if (!key) return;
+  if (state.mode === "informatica") {
+    if (conversationId) {
+      safeSessionSet(key, String(conversationId));
+    } else {
+      safeSessionRemove(key);
+    }
+    return;
+  }
   if (conversationId) {
     safeStorageSet(key, String(conversationId));
   } else {
@@ -489,9 +643,9 @@ function setSavedActiveConversationId(conversationId, sessionIdOverride = null) 
 }
 
 function clearSavedActiveConversationId(sessionIdOverride = null) {
-  if (state.isVisitor) return;
   const key = getActiveConversationStorageKey(sessionIdOverride);
   if (key) {
+    safeSessionRemove(key);
     safeStorageRemove(key);
   }
 }
@@ -926,119 +1080,377 @@ function updateSidebarProfileRow() {
   el.sidebarProfileName.textContent = profile.first_name;
 }
 
+function getConversationDateGroup(rawUpdatedAt, nowInput = new Date()) {
+  const now = nowInput instanceof Date ? nowInput : new Date(nowInput);
+  const dt = rawUpdatedAt ? new Date(rawUpdatedAt) : now;
+  if (Number.isNaN(dt.getTime())) return "Today";
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const updatedDayStart = new Date(dt.getFullYear(), dt.getMonth(), dt.getDate()).getTime();
+  const dayMs = 24 * 60 * 60 * 1000;
+  if (updatedDayStart >= todayStart) return "Today";
+  if (updatedDayStart >= todayStart - dayMs) return "Yesterday";
+  if (updatedDayStart >= todayStart - 7 * dayMs) return "Previous 7 Days";
+  return "Older";
+}
+
+function upsertLocalServerConversationSummary({ id, title, createdAt, updatedAt }) {
+  if (!id) return;
+  const existingIdx = state.conversations.findIndex((c) => c.id === id);
+  const entry = {
+    id,
+    title: title || "New chat",
+    titleGenerated: true,
+    createdAt: createdAt || (existingIdx !== -1 ? state.conversations[existingIdx].createdAt : updatedAt) || new Date().toISOString(),
+    updatedAt: updatedAt || new Date().toISOString(),
+  };
+  if (existingIdx !== -1) {
+    state.conversations.splice(existingIdx, 1);
+  }
+  state.conversations.unshift(entry);
+  renderHistorySidebar();
+}
+
+async function fetchServerConversations(query = state.historySearchQuery) {
+  if (!isServerHistoryMode()) return [];
+  const seq = ++state.conversationsFetchSeq;
+  const trimmedQ = String(query || "").trim();
+  const url = trimmedQ
+    ? `/api/conversations?q=${encodeURIComponent(trimmedQ)}`
+    : "/api/conversations";
+  try {
+    const res = await apiFetch(url);
+    if (res.status === 401) {
+      clearSessionToken();
+      resetRuntimeSessionToLogin();
+      return [];
+    }
+    if (!res.ok) return state.conversations;
+    const data = await res.json().catch(() => ({}));
+    if (seq !== state.conversationsFetchSeq) return state.conversations;
+    const list = Array.isArray(data.conversations) ? data.conversations : [];
+    state.conversations = list.map((c) => ({
+      id: String(c.id),
+      title: String(c.title || "New chat"),
+      titleGenerated: true,
+      createdAt: c.created_at,
+      updatedAt: c.updated_at,
+    }));
+    renderHistorySidebar();
+    return state.conversations;
+  } catch (err) {
+    return state.conversations;
+  }
+}
+
+async function commitRenameConversation(conversationId, rawTitle) {
+  const trimmed = String(rawTitle || "").trim();
+  if (!trimmed || trimmed.length > 80) {
+    state.renameError = "Title must be 1–80 characters.";
+    renderHistorySidebar();
+    return;
+  }
+
+  const target = state.conversations.find((c) => c.id === conversationId);
+  if (target && trimmed === String(target.title || "").trim()) {
+    state.renamingConversationId = null;
+    state.renameError = "";
+    renderHistorySidebar();
+    return;
+  }
+
+  if (isServerHistoryMode()) {
+    try {
+      const res = await apiFetch(`/api/conversations/${encodeURIComponent(conversationId)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: trimmed }),
+      });
+      if (res.status === 401) {
+        clearSessionToken();
+        resetRuntimeSessionToLogin();
+        return;
+      }
+      if (!res.ok) {
+        const errBody = await res.json().catch(() => ({}));
+        state.renameError = errBody.detail || "Could not rename conversation.";
+        renderHistorySidebar();
+        return;
+      }
+      const updated = await res.json();
+      const idx = state.conversations.findIndex((c) => c.id === conversationId);
+      if (idx !== -1) {
+        state.conversations[idx] = {
+          ...state.conversations[idx],
+          title: updated.title || trimmed,
+        };
+      }
+      state.renamingConversationId = null;
+      state.renameError = "";
+      renderHistorySidebar();
+      return;
+    } catch (err) {
+      state.renameError = "Could not rename conversation.";
+      renderHistorySidebar();
+      return;
+    }
+  }
+
+  const idx = state.conversations.findIndex((c) => c.id === conversationId);
+  if (idx !== -1) {
+    state.conversations[idx] = {
+      ...state.conversations[idx],
+      title: trimmed,
+      titleGenerated: true,
+    };
+    saveConversationsForCustomer();
+  }
+  state.renamingConversationId = null;
+  state.renameError = "";
+  renderHistorySidebar();
+}
+
+function getFilteredConversationsForSidebar() {
+  const list = Array.isArray(state.conversations) ? state.conversations : [];
+  if (isServerHistoryMode()) {
+    return list;
+  }
+  const q = String(state.historySearchQuery || "").trim().toLowerCase();
+  if (!q) return list;
+  return list.filter((conv) => {
+    if (String(conv.title || "").toLowerCase().includes(q)) return true;
+    if (Array.isArray(conv.messages)) {
+      return conv.messages.some((m) => String(m?.content || "").toLowerCase().includes(q));
+    }
+    return false;
+  });
+}
+
 function renderHistorySidebar() {
   if (!el.historyList) return;
   el.historyList.innerHTML = "";
 
-  if (!Array.isArray(state.conversations) || state.conversations.length === 0) {
+  const visibleList = getFilteredConversationsForSidebar();
+
+  if (visibleList.length === 0) {
     const empty = document.createElement("div");
     empty.className = "history-empty";
-    empty.textContent = state.isVisitor
-      ? "Sign in to save chat history."
-      : "No conversations yet.";
+    if (String(state.historySearchQuery || "").trim()) {
+      empty.textContent = "No matching conversations.";
+    } else if (state.isVisitor) {
+      empty.textContent = "Sign in to save chat history.";
+    } else {
+      empty.textContent = "No conversations yet.";
+    }
     el.historyList.appendChild(empty);
     return;
   }
 
-  for (const conv of state.conversations) {
-    const item = document.createElement("div");
-    item.className = "history-item";
-    item.setAttribute("role", "listitem");
-    if (conv.id === state.activeConversationId) {
-      item.classList.add("is-active");
-    }
-    if (state.pendingDeleteConversationId === conv.id) {
-      item.classList.add("is-confirming-delete");
-    }
+  const groupOrder = ["Today", "Yesterday", "Previous 7 Days", "Older"];
+  const grouped = new Map(groupOrder.map((g) => [g, []]));
+  for (const conv of visibleList) {
+    const grp = getConversationDateGroup(conv.updatedAt || conv.updated_at || conv.createdAt);
+    (grouped.get(grp) || grouped.get("Older")).push(conv);
+  }
 
-    const mainRow = document.createElement("div");
-    mainRow.className = "history-item-main";
+  for (const groupName of groupOrder) {
+    const groupItems = grouped.get(groupName) || [];
+    if (groupItems.length === 0) continue;
 
-    const displayTitle = stripQuotesAndPiiFromTitle(conv.title) || "New chat";
+    const groupLabel = document.createElement("div");
+    groupLabel.className = "history-group-label";
+    groupLabel.textContent = groupName;
+    el.historyList.appendChild(groupLabel);
 
-    const selectBtn = document.createElement("button");
-    selectBtn.type = "button";
-    selectBtn.className = "history-item-select";
-    selectBtn.setAttribute("aria-current", conv.id === state.activeConversationId ? "true" : "false");
-
-    const titleEl = document.createElement("span");
-    titleEl.className = "history-item-title";
-    titleEl.textContent = displayTitle;
-    titleEl.title = displayTitle;
-
-    selectBtn.appendChild(titleEl);
-    selectBtn.addEventListener("click", () => {
-      loadConversationById(conv.id);
-      if (isMobileViewport()) {
-        applySidebarOpenState(false, { persist: false });
+    for (const conv of groupItems) {
+      const item = document.createElement("div");
+      item.className = "history-item";
+      item.setAttribute("role", "listitem");
+      if (conv.id === state.activeConversationId) {
+        item.classList.add("is-active");
       }
-    });
+      if (state.pendingDeleteConversationId === conv.id) {
+        item.classList.add("is-confirming-delete");
+      }
+      if (state.openRowMenuConversationId === conv.id) {
+        item.classList.add("is-menu-open");
+      }
 
-    const delBtn = document.createElement("button");
-    delBtn.type = "button";
-    delBtn.className = "history-delete-btn";
-    delBtn.setAttribute("aria-label", `Delete conversation ${displayTitle}`);
-    delBtn.title = "Delete conversation";
-    delBtn.innerHTML = `
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-        <polyline points="3 6 5 6 21 6"/>
-        <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
-        <path d="M10 11v6"/>
-        <path d="M14 11v6"/>
-        <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/>
-      </svg>
-    `;
-    delBtn.addEventListener("click", (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      state.pendingDeleteConversationId =
-        state.pendingDeleteConversationId === conv.id ? null : conv.id;
-      renderHistorySidebar();
-    });
+      const mainRow = document.createElement("div");
+      mainRow.className = "history-item-main";
 
-    mainRow.appendChild(selectBtn);
-    mainRow.appendChild(delBtn);
-    item.appendChild(mainRow);
+      const displayTitle = isServerHistoryMode()
+        ? String(conv.title || "New chat")
+        : stripQuotesAndPiiFromTitle(conv.title) || "New chat";
 
-    if (state.pendingDeleteConversationId === conv.id) {
-      const confirmBar = document.createElement("div");
-      confirmBar.className = "history-confirm-bar";
+      if (state.renamingConversationId === conv.id) {
+        const renameInput = document.createElement("input");
+        renameInput.type = "text";
+        renameInput.className = "history-rename-input";
+        renameInput.maxLength = 80;
+        renameInput.value = displayTitle;
+        renameInput.setAttribute("aria-label", `Rename conversation ${displayTitle}`);
+        renameInput.addEventListener("click", (e) => e.stopPropagation());
+        renameInput.addEventListener("keydown", (e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            e.stopPropagation();
+            commitRenameConversation(conv.id, renameInput.value);
+          } else if (e.key === "Escape") {
+            e.preventDefault();
+            e.stopPropagation();
+            state.renamingConversationId = null;
+            state.renameError = "";
+            renderHistorySidebar();
+          }
+        });
+        mainRow.appendChild(renameInput);
+        setTimeout(() => {
+          try {
+            if (typeof renameInput.focus === "function") renameInput.focus();
+            if (typeof renameInput.select === "function") renameInput.select();
+          } catch (err) {
+            // Ignore focus error in stub
+          }
+        }, 0);
+      } else {
+        const selectBtn = document.createElement("button");
+        selectBtn.type = "button";
+        selectBtn.className = "history-item-select";
+        selectBtn.setAttribute("aria-current", conv.id === state.activeConversationId ? "true" : "false");
 
-      const promptSpan = document.createElement("span");
-      promptSpan.textContent = "Delete?";
+        const titleEl = document.createElement("span");
+        titleEl.className = "history-item-title";
+        titleEl.textContent = displayTitle;
+        titleEl.title = displayTitle;
 
-      const actions = document.createElement("div");
-      actions.className = "history-confirm-actions";
+        selectBtn.appendChild(titleEl);
+        selectBtn.addEventListener("click", () => {
+          state.openRowMenuConversationId = null;
+          loadConversationById(conv.id);
+          if (isMobileViewport()) {
+            applySidebarOpenState(false, { persist: false });
+          }
+        });
+        mainRow.appendChild(selectBtn);
+      }
 
-      const yesBtn = document.createElement("button");
-      yesBtn.type = "button";
-      yesBtn.className = "history-confirm-yes";
-      yesBtn.textContent = "Delete";
-      yesBtn.addEventListener("click", (e) => {
+      const menuWrap = document.createElement("div");
+      menuWrap.className = "history-row-menu-wrap";
+
+      const menuBtn = document.createElement("button");
+      menuBtn.type = "button";
+      menuBtn.className = "history-row-menu-btn";
+      menuBtn.setAttribute("aria-label", `Conversation actions for ${displayTitle}`);
+      menuBtn.setAttribute("aria-haspopup", "menu");
+      menuBtn.setAttribute("aria-expanded", String(state.openRowMenuConversationId === conv.id));
+      menuBtn.title = "Conversation options";
+      menuBtn.innerHTML = `
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+          <circle cx="5" cy="12" r="2"></circle>
+          <circle cx="12" cy="12" r="2"></circle>
+          <circle cx="19" cy="12" r="2"></circle>
+        </svg>
+      `;
+      menuBtn.addEventListener("click", (e) => {
         e.preventDefault();
         e.stopPropagation();
-        deleteConversationById(conv.id);
-      });
-
-      const noBtn = document.createElement("button");
-      noBtn.type = "button";
-      noBtn.className = "history-confirm-no";
-      noBtn.textContent = "Cancel";
-      noBtn.addEventListener("click", (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        state.pendingDeleteConversationId = null;
+        state.openRowMenuConversationId =
+          state.openRowMenuConversationId === conv.id ? null : conv.id;
         renderHistorySidebar();
       });
+      menuWrap.appendChild(menuBtn);
 
-      actions.appendChild(yesBtn);
-      actions.appendChild(noBtn);
-      confirmBar.appendChild(promptSpan);
-      confirmBar.appendChild(actions);
-      item.appendChild(confirmBar);
+      if (state.openRowMenuConversationId === conv.id) {
+        const popover = document.createElement("div");
+        popover.className = "history-row-popover";
+        popover.setAttribute("role", "menu");
+
+        const renameAction = document.createElement("button");
+        renameAction.type = "button";
+        renameAction.className = "history-row-action";
+        renameAction.setAttribute("role", "menuitem");
+        renameAction.textContent = "Rename";
+        renameAction.addEventListener("click", (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          state.openRowMenuConversationId = null;
+          state.pendingDeleteConversationId = null;
+          state.renamingConversationId = conv.id;
+          state.renameError = "";
+          renderHistorySidebar();
+        });
+
+        const deleteAction = document.createElement("button");
+        deleteAction.type = "button";
+        deleteAction.className = "history-row-action history-row-action-danger";
+        deleteAction.setAttribute("role", "menuitem");
+        deleteAction.textContent = "Delete";
+        deleteAction.addEventListener("click", (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          state.openRowMenuConversationId = null;
+          state.renamingConversationId = null;
+          state.renameError = "";
+          state.pendingDeleteConversationId = conv.id;
+          renderHistorySidebar();
+        });
+
+        popover.appendChild(renameAction);
+        popover.appendChild(deleteAction);
+        menuWrap.appendChild(popover);
+      }
+
+      mainRow.appendChild(menuWrap);
+      item.appendChild(mainRow);
+
+      if (state.renamingConversationId === conv.id && state.renameError) {
+        const errDiv = document.createElement("div");
+        errDiv.className = "history-rename-error";
+        errDiv.setAttribute("role", "alert");
+        errDiv.textContent = state.renameError;
+        item.appendChild(errDiv);
+      }
+
+      if (state.pendingDeleteConversationId === conv.id) {
+        const confirmBar = document.createElement("div");
+        confirmBar.className = "history-confirm-bar";
+
+        const promptSpan = document.createElement("span");
+        promptSpan.textContent = "Delete this conversation? This cannot be undone.";
+
+        const actions = document.createElement("div");
+        actions.className = "history-confirm-actions";
+
+        const yesBtn = document.createElement("button");
+        yesBtn.type = "button";
+        yesBtn.className = "history-confirm-yes";
+        yesBtn.textContent = "Delete";
+        yesBtn.addEventListener("click", (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          deleteConversationById(conv.id);
+        });
+
+        const noBtn = document.createElement("button");
+        noBtn.type = "button";
+        noBtn.className = "history-confirm-no";
+        noBtn.textContent = "Cancel";
+        noBtn.addEventListener("click", (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          state.pendingDeleteConversationId = null;
+          renderHistorySidebar();
+        });
+
+        actions.appendChild(yesBtn);
+        actions.appendChild(noBtn);
+        confirmBar.appendChild(promptSpan);
+        confirmBar.appendChild(actions);
+        item.appendChild(confirmBar);
+      }
+
+      el.historyList.appendChild(item);
     }
-
-    el.historyList.appendChild(item);
   }
 }
 
@@ -1313,6 +1725,10 @@ function handleSelectedFile(file) {
 function startNewConversation() {
   state.activeConversationId = null;
   state.pendingDeleteConversationId = null;
+  state.openRowMenuConversationId = null;
+  state.renamingConversationId = null;
+  state.renameError = "";
+  state.autoScrollPinned = true;
   state.history = [];
   state.uiMessages = [];
   clearPendingAttachment();
@@ -1333,11 +1749,79 @@ function startNewConversation() {
   }
 }
 
-function loadConversationById(conversationId) {
+async function loadConversationById(conversationId) {
+  state.openRowMenuConversationId = null;
+  state.renamingConversationId = null;
+  state.renameError = "";
+  state.pendingDeleteConversationId = null;
+
+  if (isServerHistoryMode()) {
+    try {
+      const res = await apiFetch(`/api/conversations/${encodeURIComponent(conversationId)}`);
+      if (res.status === 401) {
+        clearSessionToken();
+        resetRuntimeSessionToLogin();
+        return;
+      }
+      if (res.status === 404 || !res.ok) {
+        state.conversations = state.conversations.filter((c) => c.id !== conversationId);
+        startNewConversation();
+        return;
+      }
+      const conv = await res.json();
+      state.activeConversationId = conv.id;
+      clearPendingAttachment();
+      setSavedActiveConversationId(conv.id);
+      const msgs = Array.isArray(conv.messages) ? conv.messages : [];
+      state.uiMessages = msgs.map((m) => ({
+        id: m.id,
+        conversationId: conv.id,
+        role: m.role,
+        content: m.text,
+        createdAt: m.created_at,
+        vote: m.vote || null,
+        recommendations: [],
+        referencedVoyages: [],
+        suggestedReplies: [],
+      }));
+      state.history = msgs.map((m) => ({
+        role: m.role,
+        content: m.text,
+        voyage_ids: [],
+      }));
+      el.chatMessages.innerHTML = "";
+      removeWelcomeSection();
+      renderEscalation(null);
+      for (const msg of state.uiMessages) {
+        appendMessage(
+          {
+            role: msg.role,
+            content: msg.content,
+            conversationId: conv.id,
+            messageId: msg.id,
+            createdAt: msg.createdAt,
+            vote: msg.vote,
+          },
+          { persist: false, forceScroll: true }
+        );
+      }
+      if (!hasSentUserMessage()) {
+        renderWelcomeSection();
+        hideChips({ clearPending: true });
+      } else {
+        hideChips({ clearPending: true });
+      }
+      scrollChatToBottom({ force: true });
+      renderHistorySidebar();
+      return;
+    } catch (err) {
+      return;
+    }
+  }
+
   const conv = state.conversations.find((c) => c.id === conversationId);
   if (!conv) return;
   state.activeConversationId = conv.id;
-  state.pendingDeleteConversationId = null;
   clearPendingAttachment();
   setSavedActiveConversationId(conv.id);
   state.history = sanitizeHistoryEntries(conv.history);
@@ -1345,7 +1829,7 @@ function loadConversationById(conversationId) {
   el.chatMessages.innerHTML = "";
   removeWelcomeSection();
   for (const msg of state.uiMessages) {
-    appendMessage(msg, { persist: false });
+    appendMessage(msg, { persist: false, forceScroll: true });
   }
   if (!hasSentUserMessage()) {
     renderWelcomeSection();
@@ -1354,13 +1838,49 @@ function loadConversationById(conversationId) {
     const lastAssistant = [...state.uiMessages].reverse().find((m) => m.role === "assistant");
     scheduleFollowupChips(lastAssistant ? lastAssistant.suggestedReplies : []);
   }
+  scrollChatToBottom({ force: true });
   renderHistorySidebar();
 }
 
-function deleteConversationById(conversationId) {
+async function deleteConversationById(conversationId) {
   const wasActive = state.activeConversationId === conversationId;
-  state.conversations = state.conversations.filter((c) => c.id !== conversationId);
   state.pendingDeleteConversationId = null;
+  state.openRowMenuConversationId = null;
+  state.renamingConversationId = null;
+  state.renameError = "";
+
+  if (isServerHistoryMode()) {
+    try {
+      const res = await apiFetch(`/api/conversations/${encodeURIComponent(conversationId)}`, {
+        method: "DELETE",
+      });
+      if (res.status === 401) {
+        clearSessionToken();
+        resetRuntimeSessionToLogin();
+        return;
+      }
+      if (!res.ok && res.status !== 404) {
+        renderHistorySidebar();
+        return;
+      }
+    } catch (err) {
+      renderHistorySidebar();
+      return;
+    }
+    state.conversations = state.conversations.filter((c) => c.id !== conversationId);
+    if (wasActive) {
+      if (state.conversations.length > 0) {
+        await loadConversationById(state.conversations[0].id);
+      } else {
+        startNewConversation();
+      }
+    } else {
+      renderHistorySidebar();
+    }
+    return;
+  }
+
+  state.conversations = state.conversations.filter((c) => c.id !== conversationId);
   saveConversationsForCustomer();
 
   if (wasActive) {
@@ -1663,15 +2183,36 @@ function showCopyButtonFeedback(btnEl, labelEl, message, durationMs = 1500) {
 }
 
 function appendMessage(
-  { role, content, attachmentName = null, recommendations = [], referencedVoyages = [], suggestedReplies = [], timestamp = null },
-  { persist = true } = {}
+  {
+    role,
+    content,
+    attachmentName = null,
+    recommendations = [],
+    referencedVoyages = [],
+    suggestedReplies = [],
+    timestamp = null,
+    createdAt = null,
+    conversationId = null,
+    messageId = null,
+    vote = null,
+  },
+  { persist = true, forceScroll = false } = {}
 ) {
   removeWelcomeSection();
-  const timeStr = timestamp || currentTimeStr();
+  const isoTimestamp = createdAt || new Date().toISOString();
+  const timeStr = timestamp || formatMessageTimestamp(isoTimestamp);
   const row = document.createElement("div");
   row.className = `message-row ${role}`;
+  if (messageId) {
+    row.setAttribute("data-message-id", String(messageId));
+  }
+
+  let timeSpanRef = null;
 
   if (role === "user") {
+    const userCol = document.createElement("div");
+    userCol.className = "user-col";
+
     const bubble = document.createElement("div");
     bubble.className = "user-bubble";
 
@@ -1689,13 +2230,16 @@ function appendMessage(
     const span = document.createElement("span");
     span.className = "user-bubble-text";
     span.textContent = content;
+
     const timeEl = document.createElement("span");
-    timeEl.className = "user-bubble-time";
+    timeEl.className = "msg-time user-msg-time";
     timeEl.textContent = timeStr;
+    timeSpanRef = timeEl;
 
     bubble.appendChild(span);
-    bubble.appendChild(timeEl);
-    row.appendChild(bubble);
+    userCol.appendChild(bubble);
+    userCol.appendChild(timeEl);
+    row.appendChild(userCol);
   } else {
     row.appendChild(createMarisAvatar());
     const col = document.createElement("div");
@@ -1706,11 +2250,7 @@ function appendMessage(
     const nameEl = document.createElement("span");
     nameEl.className = "assistant-name";
     nameEl.textContent = "MARIS";
-    const timeEl = document.createElement("span");
-    timeEl.className = "msg-time";
-    timeEl.textContent = timeStr;
     header.appendChild(nameEl);
-    header.appendChild(timeEl);
     col.appendChild(header);
 
     const bubble = document.createElement("div");
@@ -1798,6 +2338,15 @@ function appendMessage(
 
     col.appendChild(bubble);
 
+    const footer = document.createElement("div");
+    footer.className = "assistant-footer";
+
+    const timeEl = document.createElement("span");
+    timeEl.className = "msg-time assistant-msg-time";
+    timeEl.textContent = timeStr;
+    timeSpanRef = timeEl;
+    footer.appendChild(timeEl);
+
     const actionsBar = document.createElement("div");
     actionsBar.className = "assistant-actions";
 
@@ -1841,15 +2390,121 @@ function appendMessage(
     });
 
     actionsBar.appendChild(copyBtn);
-    col.appendChild(actionsBar);
+
+    let feedbackErrEl = null;
+    if (isServerHistoryMode() && conversationId && messageId) {
+      let currentVote = vote === "up" || vote === "down" ? vote : null;
+      let feedbackBusy = false;
+
+      const upBtn = document.createElement("button");
+      upBtn.type = "button";
+      upBtn.className = "feedback-btn feedback-up-btn";
+      upBtn.setAttribute("aria-label", "Helpful");
+      upBtn.title = "Helpful";
+      upBtn.innerHTML = `
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3H14z"/>
+          <path d="M7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3"/>
+        </svg>
+      `;
+
+      const downBtn = document.createElement("button");
+      downBtn.type = "button";
+      downBtn.className = "feedback-btn feedback-down-btn";
+      downBtn.setAttribute("aria-label", "Not helpful");
+      downBtn.title = "Not helpful";
+      downBtn.innerHTML = `
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M10 15v4a3 3 0 0 0 3 3l4-9V2H5.72a2 2 0 0 0-2 1.7l-1.38 9a2 2 0 0 0 2 2.3H10z"/>
+          <path d="M17 2h2.67A2.31 2.31 0 0 1 22 4v7a2.31 2.31 0 0 1-2.33 2H17"/>
+        </svg>
+      `;
+
+      feedbackErrEl = document.createElement("div");
+      feedbackErrEl.className = "feedback-error hidden";
+      feedbackErrEl.setAttribute("role", "alert");
+
+      const syncVoteUi = (selected) => {
+        upBtn.classList.toggle("is-selected", selected === "up");
+        upBtn.setAttribute("aria-pressed", String(selected === "up"));
+        downBtn.classList.toggle("is-selected", selected === "down");
+        downBtn.setAttribute("aria-pressed", String(selected === "down"));
+      };
+      syncVoteUi(currentVote);
+
+      const submitVote = async (nextVote) => {
+        if (feedbackBusy) return;
+        feedbackBusy = true;
+        upBtn.disabled = true;
+        downBtn.disabled = true;
+        feedbackErrEl.textContent = "";
+        feedbackErrEl.classList.add("hidden");
+
+        try {
+          const res = await apiFetch("/api/feedback", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              conversation_id: conversationId,
+              message_id: messageId,
+              vote: nextVote,
+            }),
+          });
+          if (res.status === 401) {
+            clearSessionToken();
+            resetRuntimeSessionToLogin();
+            return;
+          }
+          if (!res.ok) {
+            const errData = await res.json().catch(() => ({}));
+            feedbackErrEl.textContent = errData.detail || "Unable to save feedback right now.";
+            feedbackErrEl.classList.remove("hidden");
+            syncVoteUi(currentVote);
+            return;
+          }
+          const saved = await res.json().catch(() => ({}));
+          currentVote = saved.vote === "up" || saved.vote === "down" ? saved.vote : nextVote;
+          syncVoteUi(currentVote);
+          const msgEntry = state.uiMessages.find((m) => m.id === messageId);
+          if (msgEntry) {
+            msgEntry.vote = currentVote;
+          }
+        } catch (err) {
+          feedbackErrEl.textContent = "Unable to save feedback right now.";
+          feedbackErrEl.classList.remove("hidden");
+          syncVoteUi(currentVote);
+        } finally {
+          feedbackBusy = false;
+          upBtn.disabled = false;
+          downBtn.disabled = false;
+        }
+      };
+
+      upBtn.addEventListener("click", () => submitVote("up"));
+      downBtn.addEventListener("click", () => submitVote("down"));
+      actionsBar.appendChild(upBtn);
+      actionsBar.appendChild(downBtn);
+    }
+
+    footer.appendChild(actionsBar);
+    col.appendChild(footer);
+    if (feedbackErrEl) {
+      col.appendChild(feedbackErrEl);
+    }
     row.appendChild(col);
   }
 
   el.chatMessages.appendChild(row);
-  el.chatMessages.scrollTop = el.chatMessages.scrollHeight;
+  if (role === "user" || forceScroll) {
+    scrollChatToBottom({ force: true });
+  } else {
+    scrollChatToBottom({ force: false });
+  }
 
   if (persist) {
     state.uiMessages.push({
+      id: messageId || null,
+      conversationId: conversationId || null,
       role,
       content,
       attachmentName: attachmentName || null,
@@ -1857,9 +2512,15 @@ function appendMessage(
       referencedVoyages: Array.isArray(referencedVoyages) ? referencedVoyages : [],
       suggestedReplies: Array.isArray(suggestedReplies) ? suggestedReplies.map(String).slice(0, 3) : [],
       timestamp: timeStr,
+      createdAt: isoTimestamp,
+      vote: vote || null,
     });
-    syncActiveConversation({ touchTimestamp: true });
+    if (!isServerHistoryMode()) {
+      syncActiveConversation({ touchTimestamp: true });
+    }
   }
+
+  return { row, timeEl: timeSpanRef };
 }
 
 function renderWelcomeMessage(profile) {
@@ -1995,12 +2656,14 @@ async function selectGuest(rcycId) {
 function configureMockChrome() {
   state.isVisitor = false;
   if (el.workspaceMain) el.workspaceMain.classList.remove("is-visitor-mode");
+  if (el.historySearchWrap) el.historySearchWrap.classList.remove("hidden");
   el.chatIdentityStrip.classList.remove("hidden");
   el.guestPickerSection.classList.remove("hidden");
   el.guestPickerDivider.classList.remove("hidden");
   el.popoverMyProfileBtn.classList.remove("hidden");
   el.popoverSwitchAnonBtn.classList.remove("hidden");
   if (el.popoverVisitorSignInBtn) el.popoverVisitorSignInBtn.classList.add("hidden");
+  if (el.accountActionDivider) el.accountActionDivider.classList.add("hidden");
   el.popoverLogoutBtn.classList.add("hidden");
   el.demoInsightsToggleBtn.classList.remove("hidden");
   el.demoFooter.classList.remove("hidden");
@@ -2015,12 +2678,14 @@ function configureMockChrome() {
 function configureInformaticaChrome() {
   state.isVisitor = false;
   if (el.workspaceMain) el.workspaceMain.classList.remove("is-visitor-mode");
+  if (el.historySearchWrap) el.historySearchWrap.classList.remove("hidden");
   el.chatIdentityStrip.classList.add("hidden");
   el.guestPickerSection.classList.add("hidden");
   el.guestPickerDivider.classList.add("hidden");
   el.popoverMyProfileBtn.classList.remove("hidden");
   el.popoverSwitchAnonBtn.classList.add("hidden");
   if (el.popoverVisitorSignInBtn) el.popoverVisitorSignInBtn.classList.add("hidden");
+  if (el.accountActionDivider) el.accountActionDivider.classList.remove("hidden");
   el.popoverLogoutBtn.classList.remove("hidden");
   el.demoInsightsToggleBtn.classList.add("hidden");
   el.demoInsightsDrawer.classList.add("hidden");
@@ -2036,11 +2701,13 @@ function configureVisitorChrome() {
   if (el.workspaceMain) {
     el.workspaceMain.classList.add("is-visitor-mode");
   }
+  if (el.historySearchWrap) el.historySearchWrap.classList.add("hidden");
   el.chatIdentityStrip.classList.add("hidden");
   el.guestPickerSection.classList.add("hidden");
   el.guestPickerDivider.classList.add("hidden");
   el.popoverMyProfileBtn.classList.add("hidden");
   el.popoverSwitchAnonBtn.classList.add("hidden");
+  if (el.accountActionDivider) el.accountActionDivider.classList.add("hidden");
   el.popoverLogoutBtn.classList.add("hidden");
   if (el.popoverVisitorSignInBtn) el.popoverVisitorSignInBtn.classList.remove("hidden");
   el.demoInsightsToggleBtn.classList.add("hidden");
@@ -2292,18 +2959,23 @@ function renderInformaticaMe(me) {
   el.infaBookingsList.appendChild(buildInfaBookingsFragment(me.bookings));
 }
 
-function renderInformaticaWelcome(me, { isFreshLogin = false } = {}) {
+async function renderInformaticaWelcome(me, { isFreshLogin = false } = {}) {
   state.me = me;
   state.pendingDeleteConversationId = null;
+  state.openRowMenuConversationId = null;
+  state.renamingConversationId = null;
+  state.renameError = "";
+  state.historySearchQuery = "";
+  if (el.historySearchInput) el.historySearchInput.value = "";
   updateSidebarProfileRow();
   if (me && me.customer_id) {
-    state.conversations = loadConversationsForCustomer(me.customer_id);
+    await fetchServerConversations("");
     if (isFreshLogin) {
       clearSavedActiveConversationId(me.customer_id);
     } else {
       const savedActiveId = getSavedActiveConversationId(me.customer_id);
       if (savedActiveId && state.conversations.some((c) => c.id === savedActiveId)) {
-        loadConversationById(savedActiveId);
+        await loadConversationById(savedActiveId);
         return;
       }
     }
@@ -2345,13 +3017,7 @@ function resetRuntimeSessionToLogin(errorMsg = "") {
   closeHistoryDrawer();
   state.me = null;
   state.rcycId = "";
-  state.conversations = [];
-  state.activeConversationId = null;
-  state.pendingDeleteConversationId = null;
-  state.history = [];
-  state.uiMessages = [];
-  if (el.historyList) el.historyList.innerHTML = "";
-  if (el.chatMessages) el.chatMessages.innerHTML = "";
+  clearAllBrowserConversationData();
   showLoginView(errorMsg);
 }
 
@@ -2396,7 +3062,7 @@ async function sendMessage(text, { focus = null } = {}) {
   removeWelcomeSection();
   clearPendingAttachment();
 
-  appendMessage({
+  const userAppended = appendMessage({
     role: "user",
     content: messageText,
     attachmentName: attached ? attached.name : null,
@@ -2404,9 +3070,10 @@ async function sendMessage(text, { focus = null } = {}) {
   el.messageInput.value = "";
   autoResizeMessageInput(el.messageInput);
   const targetConvId = state.activeConversationId;
+  const serverMode = isServerHistoryMode();
 
   const triggerTitleOnce = () => {
-    if (state.isVisitor || !isFirstUserMessage || !targetConvId) return;
+    if (serverMode || state.isVisitor || !isFirstUserMessage || !targetConvId) return;
     const targetConv = state.conversations.find((c) => c.id === targetConvId);
     if (!targetConv || targetConv.titleGenerated) return;
     const titleSeed = rawTrimmed || (attached ? `Attached file ${attached.name}` : messageText);
@@ -2423,6 +3090,9 @@ async function sendMessage(text, { focus = null } = {}) {
       state.mode === "informatica"
         ? { message: messageText, history: state.history }
         : { rcyc_id: state.rcycId, message: messageText, history: state.history };
+    if (serverMode && targetConvId) {
+      bodyPayload.conversation_id = targetConvId;
+    }
     if (focus) {
       bodyPayload.focus = focus;
     }
@@ -2488,12 +3158,40 @@ async function sendMessage(text, { focus = null } = {}) {
       shouldShowStartingChipsAfter = true;
     }
 
+    if (serverMode && data.conversation_id) {
+      state.activeConversationId = data.conversation_id;
+      setSavedActiveConversationId(data.conversation_id);
+      if (data.user_created_at && userAppended && userAppended.timeEl) {
+        userAppended.timeEl.textContent = formatMessageTimestamp(data.user_created_at);
+      }
+      if (data.user_message_id && state.uiMessages.length > 0) {
+        const lastUserEntry = [...state.uiMessages].reverse().find((m) => m.role === "user");
+        if (lastUserEntry && !lastUserEntry.id) {
+          lastUserEntry.id = data.user_message_id;
+          lastUserEntry.conversationId = data.conversation_id;
+          lastUserEntry.createdAt = data.user_created_at || lastUserEntry.createdAt;
+        }
+      }
+      upsertLocalServerConversationSummary({
+        id: data.conversation_id,
+        title: data.conversation_title || "New chat",
+        updatedAt: data.assistant_created_at || new Date().toISOString(),
+      });
+      if (!state.historySearchQuery.trim()) {
+        void fetchServerConversations("");
+      }
+    }
+
     appendMessage({
       role: "assistant",
       content: data.reply,
       recommendations: data.recommendations,
       referencedVoyages: data.referenced_voyages,
       suggestedReplies: nextSuggestedReplies,
+      conversationId: data.conversation_id || targetConvId || null,
+      messageId: data.assistant_message_id || null,
+      createdAt: data.assistant_created_at || null,
+      vote: null,
     });
     triggerTitleOnce();
   } catch (err) {
@@ -2508,7 +3206,7 @@ async function sendMessage(text, { focus = null } = {}) {
     if (el.attachFileBtn) el.attachFileBtn.disabled = false;
     el.typingIndicator.classList.add("is-idle");
     el.typingIndicator.setAttribute("aria-hidden", "true");
-    el.chatMessages.scrollTop = el.chatMessages.scrollHeight;
+    scrollChatToBottom({ force: false });
     if (shouldShowStartingChipsAfter) {
       showStartingChips();
     } else {
@@ -2586,9 +3284,13 @@ async function openCatalogModal() {
   }
 }
 
-function closePopover() {
+function closePopover({ restoreFocus = false } = {}) {
+  const wasOpen = !el.accountPopover.classList.contains("hidden");
   el.accountPopover.classList.add("hidden");
   el.accountMenuBtn.setAttribute("aria-expanded", "false");
+  if (restoreFocus && wasOpen && typeof el.accountMenuBtn.focus === "function") {
+    el.accountMenuBtn.focus();
+  }
 }
 
 function openDataDrawer() {
@@ -2632,11 +3334,21 @@ document.addEventListener("click", (e) => {
   if (!el.accountPopover.contains(e.target) && !el.accountMenuBtn.contains(e.target)) {
     closePopover();
   }
+  if (state.openRowMenuConversationId) {
+    state.openRowMenuConversationId = null;
+    renderHistorySidebar();
+  }
 });
 
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
-    closePopover();
+    closePopover({ restoreFocus: true });
+    if (state.openRowMenuConversationId || state.renamingConversationId) {
+      state.openRowMenuConversationId = null;
+      state.renamingConversationId = null;
+      state.renameError = "";
+      renderHistorySidebar();
+    }
     closeDataDrawer();
     if (isMobileViewport() && state.sidebarOpen) {
       applySidebarOpenState(false, { persist: true });
@@ -2645,6 +3357,29 @@ document.addEventListener("keydown", (e) => {
     toggleDemoInsights(false);
   }
 });
+
+if (el.historySearchInput) {
+  el.historySearchInput.addEventListener("input", () => {
+    state.historySearchQuery = el.historySearchInput.value || "";
+    if (state.searchDebounceTimer !== null) {
+      clearTimeout(state.searchDebounceTimer);
+    }
+    state.searchDebounceTimer = setTimeout(() => {
+      state.searchDebounceTimer = null;
+      if (isServerHistoryMode()) {
+        void fetchServerConversations(state.historySearchQuery);
+      } else {
+        renderHistorySidebar();
+      }
+    }, 250);
+  });
+}
+
+if (el.chatMessages) {
+  el.chatMessages.addEventListener("scroll", () => {
+    state.autoScrollPinned = isChatNearBottom();
+  });
+}
 
 el.demoInsightsToggleBtn.addEventListener("click", () => toggleDemoInsights());
 el.closeDemoInsightsBtn.addEventListener("click", () => toggleDemoInsights(false));
@@ -2787,7 +3522,7 @@ el.infaLoginForm.addEventListener("submit", async (e) => {
     hideLoginView();
     renderEscalation(null);
     renderInformaticaMe(me);
-    renderInformaticaWelcome(me, { isFreshLogin: true });
+    await renderInformaticaWelcome(me, { isFreshLogin: true });
   } catch (err) {
     el.loginError.textContent = "Unable to connect to sign-in service.";
     el.loginError.classList.remove("hidden");
@@ -3029,7 +3764,7 @@ if (el.historyDrawerBackdrop) {
       const me = await meRes.json();
       hideLoginView();
       renderInformaticaMe(me);
-      renderInformaticaWelcome(me, { isFreshLogin: false });
+      await renderInformaticaWelcome(me, { isFreshLogin: false });
       return;
     } catch (err) {
       showLoginView("Unable to reach guest profile service.");

@@ -51,6 +51,8 @@ class Settings:
     secret_key: str = ""
     demo_password: str = ""
     allowed_origins: tuple[str, ...] = ()
+    chat_db_path: Path = BASE_DIR / "data" / "chat.db"
+    chat_retention_days: int = 30
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -124,6 +126,8 @@ class Settings:
             secret_key=os.getenv("SECRET_KEY", "").strip(),
             demo_password=os.getenv("DEMO_PASSWORD", ""),
             allowed_origins=allowed_origins,
+            chat_db_path=resolve_path("CHAT_DB_PATH", "data/chat.db"),
+            chat_retention_days=parse_int("CHAT_RETENTION_DAYS", 30),
         )
 
 

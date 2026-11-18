@@ -78,3 +78,25 @@ The following items are **UNCONFIRMED** (not verbatim from `profile_source.py` /
 - **UNCONFIRMED** (Catalog & domain adapter): `InformaticaProvider.getProfile()`, `getBookings()`, and `listVoyages()` (local `sample_data.json` catalog) adapt `profile_source.py` raw dicts into MARIS `GuestProfile` and `Booking` models.
 - **Live Informatica check**: Only runnable when `INFA_*`, `SECRET_KEY`, and `DEMO_PASSWORD` Secrets are configured.
 - **Sample spreadsheet notice**: `data/guest_profiles.xlsx` is sample data only and must be removed or replaced before any real guest data is used.
+
+## Conversation History & Feedback Persistence
+
+Signed-in Informatica guests have their conversations persisted in SQLite (`backend/app/chat_store.py`) and strictly scoped by the server-verified session Customer ID:
+
+- **Configuration**:
+  - `CHAT_DB_PATH` (default `data/chat.db`): SQLite database path.
+  - `CHAT_RETENTION_DAYS` (default `30`): Days to retain conversations before automatic deletion on startup and every 24 hours.
+  - **Container storage caveat**: Container filesystems are ephemeral—mount a persistent volume at `CHAT_DB_PATH` in production if chat history should survive container restarts or redeployments.
+- **Stored fields only** (never stores email, phone, loyalty tier, or raw Informatica payloads):
+  - `conversations`: `id`, `customer_id`, `title`, `created_at`, `updated_at`
+  - `messages`: `id`, `conversation_id`, `role`, `text`, `created_at`
+  - `message_feedback`: `conversation_id`, `message_id`, `customer_id`, `vote` (`up` or `down`), `created_at`, `updated_at`
+- **API endpoints** (require a signed-in guest session; unauthenticated callers receive `401`, visitors receive `403`, cross-guest access returns `404`):
+  - `GET /api/conversations` (`?q=` optional literal search across title and message text, sorted newest first)
+  - `POST /api/conversations`
+  - `GET /api/conversations/{id}`
+  - `PATCH /api/conversations/{id}` (title 1–80 chars, trimmed)
+  - `DELETE /api/conversations/{id}`
+  - `POST /api/feedback` (`{conversation_id, message_id, vote}`)
+  - `POST /api/chat` accepts optional `conversation_id`, auto-titles new threads from the first 6 words of the guest's first message, and persists exchanges.
+

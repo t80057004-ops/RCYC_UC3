@@ -192,6 +192,21 @@
             </button>
           </div>
 
+          <div id="historySearchWrap" class="history-search-wrap">
+            <svg class="history-search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="11" cy="11" r="8"></circle>
+              <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+            </svg>
+            <input
+              type="search"
+              id="historySearchInput"
+              class="history-search-input"
+              placeholder="Search chats…"
+              aria-label="Search conversations"
+              autocomplete="off"
+            />
+          </div>
+
           <div class="history-section-label">Chats</div>
           <div id="historyList" class="history-list" role="list"></div>
 
@@ -223,7 +238,7 @@
 
                 <button type="button" id="popoverMyProfileBtn" class="popover-action-item" role="menuitem">
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
-                  <span>Your details</span>
+                  <span>Your Details</span>
                 </button>
 
                 <button type="button" id="popoverSwitchAnonBtn" class="popover-action-item hidden" role="menuitem">
@@ -235,6 +250,8 @@
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg>
                   <span>Sign in</span>
                 </button>
+
+                <div id="accountActionDivider" class="popover-divider hidden"></div>
 
                 <button type="button" id="popoverLogoutBtn" class="popover-action-item hidden" role="menuitem">
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
@@ -315,10 +332,19 @@
         <!-- Centered Conversation Stream -->
         <div id="chatMessages" class="chat-messages" aria-live="polite" aria-relevant="additions"></div>
 
-        <!-- Typing Indicator -->
+        <!-- Typing Indicator (left column with MARIS avatar) -->
         <div id="typingIndicator" class="typing-indicator is-idle" aria-live="polite" aria-hidden="true">
-          <span class="typing-dots" aria-hidden="true"><span></span><span></span><span></span></span>
-          <span>MARIS is typing…</span>
+          <div class="maris-avatar typing-avatar" aria-hidden="true">
+            <svg width="20" height="20" viewBox="0 0 36 36" fill="none" aria-hidden="true">
+              <path d="M18 5L29 24H18V5Z" fill="var(--gold)"/>
+              <path d="M16 9L8 24H16V9Z" fill="var(--gold)" fill-opacity="0.82"/>
+              <path d="M5 26.5H31L27.5 30.5H8.5L5 26.5Z" fill="var(--gold)"/>
+            </svg>
+          </div>
+          <div class="typing-bubble">
+            <span class="typing-dots" aria-hidden="true"><span></span><span></span><span></span></span>
+            <span>MARIS is typing…</span>
+          </div>
         </div>
 
         <!-- Bottom Centered Composer Stack -->

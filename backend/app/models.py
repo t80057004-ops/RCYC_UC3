@@ -5,7 +5,7 @@ from __future__ import annotations
 import base64
 from pathlib import Path
 from typing import Literal
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024  # 10 MB
@@ -249,6 +249,7 @@ class ChatRequest(BaseModel):
         default=None,
         description="Sample RCYC_ID or 'ANONYMOUS' / empty for visitor.",
     )
+    conversation_id: str | None = Field(default=None, max_length=128)
     message: str = Field(default="", max_length=2000)
     history: list[ChatTurn] = Field(default_factory=list)
     focus: ChatFocus | None = Field(
@@ -291,6 +292,13 @@ class ChatResponse(BaseModel):
     escalation: EscalationInfo = Field(default_factory=EscalationInfo)
     llm_provider_used: str = "rule_based"
     llm_fallback_triggered: bool = False
+    conversation_id: str | None = None
+    conversation_title: str | None = None
+    user_message_id: str | None = None
+    assistant_message_id: str | None = None
+    user_created_at: str | None = None
+    assistant_created_at: str | None = None
+    context_voyage_ids: list[str] = Field(default_factory=list, exclude=True)
 
 
 class ConversationTitleRequest(BaseModel):
@@ -303,4 +311,100 @@ class ConversationTitleResponse(BaseModel):
     """Short 2-5 word conversation title."""
 
     title: str
+
+
+class ConversationSummary(BaseModel):
+    """Saved conversation metadata item (never includes raw Informatica data or email/phone)."""
+
+    id: str
+    title: str
+    created_at: str
+    updated_at: str
+
+
+class ConversationListResponse(BaseModel):
+    """List of conversations owned by the signed-in guest."""
+
+    conversations: list[ConversationSummary] = Field(default_factory=list)
+
+
+class ConversationMessage(BaseModel):
+    """Persisted chat message with optional guest feedback vote."""
+
+    id: str
+    role: Literal["user", "assistant"]
+    text: str
+    created_at: str
+    vote: Literal["up", "down"] | None = None
+
+
+class ConversationDetailResponse(BaseModel):
+    """Full conversation messages for the signed-in guest."""
+
+    id: str
+    title: str
+    created_at: str
+    updated_at: str
+    messages: list[ConversationMessage] = Field(default_factory=list)
+
+
+class CreateConversationRequest(BaseModel):
+    """Optional title when explicitly creating a conversation."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    title: str | None = None
+
+    @field_validator("title")
+    @classmethod
+    def validate_optional_title(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        trimmed = str(v).strip()
+        if not trimmed or len(trimmed) > 80:
+            raise ValueError("Conversation title must be between 1 and 80 characters.")
+        return trimmed
+
+
+class RenameConversationRequest(BaseModel):
+    """Rename conversation request (1-80 characters after trimming)."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    title: str
+
+    @field_validator("title")
+    @classmethod
+    def validate_title(cls, v: str) -> str:
+        trimmed = str(v or "").strip()
+        if not trimmed or len(trimmed) > 80:
+            raise ValueError("Conversation title must be between 1 and 80 characters.")
+        return trimmed
+
+
+class FeedbackRequest(BaseModel):
+    """Helpful / Not helpful vote payload for an assistant reply."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    conversation_id: str = Field(..., min_length=1, max_length=128)
+    message_id: str = Field(..., min_length=1, max_length=128)
+    vote: Literal["up", "down"]
+
+    @field_validator("conversation_id", "message_id")
+    @classmethod
+    def validate_non_empty_id(cls, v: str) -> str:
+        trimmed = str(v or "").strip()
+        if not trimmed:
+            raise ValueError("Identifier must not be empty.")
+        return trimmed
+
+
+class FeedbackResponse(BaseModel):
+    """Confirmed persisted feedback state."""
+
+    conversation_id: str
+    message_id: str
+    vote: Literal["up", "down"]
+
 

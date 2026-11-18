@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -9,15 +10,16 @@ import json
 import re
 import time
 from collections import defaultdict, deque
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import Body, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict
 
+from backend.app.chat_store import ChatStore
 from backend.app.concierge_agent import ConciergeAgent
 from backend.app.config import BASE_DIR, Settings, logger, settings
 from backend.app.data_provider import (
@@ -36,11 +38,19 @@ from backend.app.llm_engine import PluggableLLMEngine
 from backend.app.models import (
     ChatRequest,
     ChatResponse,
+    ChatTurn,
+    ConversationDetailResponse,
+    ConversationListResponse,
+    ConversationSummary,
     ConversationTitleRequest,
     ConversationTitleResponse,
+    CreateConversationRequest,
     EscalationInfo,
+    FeedbackRequest,
+    FeedbackResponse,
     GuestContextResponse,
     GuestSummary,
+    RenameConversationRequest,
     Voyage,
     to_public_profile,
 )
@@ -67,6 +77,7 @@ revoked_session_tokens: dict[str, int] = {}
 data_provider = create_data_provider(settings)
 llm_engine = PluggableLLMEngine(settings)
 concierge_agent = ConciergeAgent(data_provider=data_provider, llm_engine=llm_engine)
+chat_store = ChatStore(settings.chat_db_path, settings.chat_retention_days)
 
 
 class LoginRequest(BaseModel):
@@ -77,14 +88,36 @@ class LoginRequest(BaseModel):
     password: str
 
 
+async def _daily_retention_loop() -> None:
+    while True:
+        await asyncio.sleep(24 * 60 * 60)
+        try:
+            active_cfg = _active_settings()
+            _active_chat_store().cleanup_expired(active_cfg.chat_retention_days)
+        except Exception as exc:
+            logger.warning("Daily chat retention cleanup failed (%s).", exc)
+
+
 @asynccontextmanager
 async def lifespan(application: FastAPI):
+    try:
+        _active_chat_store().cleanup_expired(_active_settings().chat_retention_days)
+    except Exception as exc:
+        logger.warning("Startup chat retention cleanup failed (%s).", exc)
+
+    cleanup_task = asyncio.create_task(_daily_retention_loop())
+
     if settings.gemini_api_key:
         try:
             llm_engine.refresh_gemini_models()
         except Exception as exc:
             logger.warning("Gemini ListModels failed on startup (%s).", exc)
-    yield
+    try:
+        yield
+    finally:
+        cleanup_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await cleanup_task
 
 
 app = FastAPI(
@@ -96,6 +129,7 @@ app = FastAPI(
 app.state.settings = settings
 app.state.data_provider = data_provider
 app.state.concierge_agent = concierge_agent
+app.state.chat_store = chat_store
 
 if settings.allowed_origins:
     app.add_middleware(
@@ -117,6 +151,10 @@ def _active_provider() -> GuestDataProvider:
 
 def _active_agent() -> ConciergeAgent:
     return getattr(app.state, "concierge_agent", concierge_agent)
+
+
+def _active_chat_store() -> ChatStore:
+    return getattr(app.state, "chat_store", chat_store)
 
 
 def _b64url_encode(raw: bytes) -> str:
@@ -271,6 +309,15 @@ def _session_customer_id(request: Request, active_cfg: Settings) -> str | None:
     if role == "guest" and cid:
         return cid
     return None
+
+
+def _require_guest_session(request: Request, active_cfg: Settings) -> str:
+    role, customer_id = _session_info(request, active_cfg)
+    if role == "visitor":
+        raise HTTPException(status_code=403, detail="Sign in required to access profile or bookings.")
+    if role != "guest" or not customer_id:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return customer_id
 
 
 def _check_and_record_visitor_chat(client_ip: str, now: float) -> bool:
@@ -809,8 +856,35 @@ def chat_endpoint(request: Request, payload: ChatRequest):
             return agent.handle_chat(payload, session_customer_id=None, visitor_mode=True)
         if role != "guest" or not customer_id:
             raise HTTPException(status_code=401, detail="Not authenticated")
+
+        store = _active_chat_store()
+        target_conv_id: str | None = None
+        server_history: list[ChatTurn] = []
+        server_last_voyages: list[str] = []
+        if payload.conversation_id is not None:
+            conv_id_clean = payload.conversation_id.strip()
+            recent_ctx = store.get_recent_context(customer_id, conv_id_clean, limit=8) if conv_id_clean else None
+            if recent_ctx is None:
+                raise HTTPException(status_code=404, detail="Conversation not found")
+            target_conv_id = conv_id_clean
+            recent_rows, server_last_voyages = recent_ctx
+            server_history = [
+                ChatTurn(
+                    role=r["role"],
+                    content=r["text"],
+                    voyage_ids=list(r.get("last_voyages") or []),
+                )
+                for r in recent_rows
+                if r.get("role") in {"user", "assistant"}
+            ]
+
         try:
-            response = agent.handle_chat(payload, session_customer_id=customer_id)
+            response = agent.handle_chat(
+                payload,
+                session_customer_id=customer_id,
+                conversation_history=server_history,
+                last_voyages=server_last_voyages,
+            )
         except ProfileSourceUnavailable:
             logger.warning("Profile source temporarily unavailable for /api/chat")
             raise HTTPException(status_code=503, detail="Guest profile service temporarily unavailable") from None
@@ -818,9 +892,100 @@ def chat_endpoint(request: Request, payload: ChatRequest):
             resp = JSONResponse(status_code=401, content={"detail": "Not authenticated"})
             _clear_session_cookie(resp)
             return resp
+
+        saved = store.append_exchange(
+            customer_id,
+            target_conv_id,
+            payload.message,
+            response.reply,
+            assistant_voyage_ids=response.context_voyage_ids,
+        )
+        if saved is None:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        response.conversation_id = saved["conversation_id"]
+        response.conversation_title = saved["conversation_title"]
+        response.user_message_id = saved["user_message_id"]
+        response.assistant_message_id = saved["assistant_message_id"]
+        response.user_created_at = saved["user_created_at"]
+        response.assistant_created_at = saved["assistant_created_at"]
         return response
 
     return agent.handle_chat(payload)
+
+
+@app.get("/api/conversations", response_model=ConversationListResponse)
+def list_conversations_endpoint(
+    request: Request,
+    q: str | None = Query(default=None, max_length=200),
+) -> ConversationListResponse:
+    """List saved conversations for the signed-in guest, newest first, with optional server-side search."""
+    customer_id = _require_guest_session(request, _active_settings())
+    rows = _active_chat_store().list_conversations(customer_id, query=q)
+    return ConversationListResponse(conversations=[ConversationSummary(**r) for r in rows])
+
+
+@app.post("/api/conversations", response_model=ConversationSummary, status_code=201)
+def create_conversation_endpoint(
+    request: Request,
+    payload: CreateConversationRequest | None = Body(default=None),
+) -> ConversationSummary:
+    """Create a new conversation scoped to the signed-in guest."""
+    customer_id = _require_guest_session(request, _active_settings())
+    title = payload.title if (payload and payload.title) else "New chat"
+    created = _active_chat_store().create_conversation(customer_id, title=title)
+    return ConversationSummary(**created)
+
+
+@app.get("/api/conversations/{conversation_id}", response_model=ConversationDetailResponse)
+def get_conversation_endpoint(request: Request, conversation_id: str) -> ConversationDetailResponse:
+    """Return messages for a conversation owned by the signed-in guest."""
+    customer_id = _require_guest_session(request, _active_settings())
+    conv = _active_chat_store().get_conversation(customer_id, conversation_id.strip())
+    if conv is None:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return ConversationDetailResponse(**conv)
+
+
+@app.patch("/api/conversations/{conversation_id}", response_model=ConversationSummary)
+def rename_conversation_endpoint(
+    request: Request,
+    conversation_id: str,
+    payload: RenameConversationRequest,
+) -> ConversationSummary:
+    """Rename a conversation owned by the signed-in guest (1-80 chars, trimmed)."""
+    customer_id = _require_guest_session(request, _active_settings())
+    updated = _active_chat_store().rename_conversation(customer_id, conversation_id.strip(), payload.title)
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return ConversationSummary(**updated)
+
+
+@app.delete("/api/conversations/{conversation_id}")
+def delete_conversation_endpoint(request: Request, conversation_id: str) -> dict[str, Any]:
+    """Delete a conversation owned by the signed-in guest."""
+    customer_id = _require_guest_session(request, _active_settings())
+    deleted = _active_chat_store().delete_conversation(customer_id, conversation_id.strip())
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return {"deleted": True, "id": conversation_id.strip()}
+
+
+@app.post("/api/feedback", response_model=FeedbackResponse)
+def feedback_endpoint(request: Request, payload: FeedbackRequest) -> FeedbackResponse:
+    """Upsert helpful/not-helpful feedback for an assistant reply owned by the signed-in guest."""
+    customer_id = _require_guest_session(request, _active_settings())
+    try:
+        saved = _active_chat_store().upsert_feedback(
+            customer_id=customer_id,
+            conversation_id=payload.conversation_id,
+            message_id=payload.message_id,
+            vote=payload.vote,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    if saved is None:
+        raise HTTPException(status_code=404, detail="Message not found")
+    return FeedbackResponse(**saved)
 
 
 @app.post("/api/conversations/title", response_model=ConversationTitleResponse)

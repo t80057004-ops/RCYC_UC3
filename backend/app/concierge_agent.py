@@ -13,6 +13,7 @@ from backend.app.models import (
     Booking,
     ChatRequest,
     ChatResponse,
+    ChatTurn,
     EscalationInfo,
     GuestProfile,
     Voyage,
@@ -134,6 +135,112 @@ SEASON_ALIASES: dict[str, list[str]] = {
 VISITOR_CLARIFY_MARKER = "could you share up to two details?"
 
 
+def _detect_superlative(lowered: str) -> tuple[str, str, str] | None:
+    if re.search(
+        r"\b(cheapest|most affordable|lowest price|lowest fare|lowest cost|least expensive|most economical|budget)\b",
+        lowered,
+    ):
+        return ("price", "min", "cheapest")
+    if re.search(
+        r"\b(most expensive|highest price|highest fare|highest cost|priciest|costliest)\b",
+        lowered,
+    ):
+        return ("price", "max", "most expensive")
+    if re.search(r"\b(shortest|fewest nights|fewest days|briefest)\b", lowered):
+        return ("duration", "min", "shortest")
+    if re.search(r"\b(longest|most nights|most days)\b", lowered):
+        return ("duration", "max", "longest")
+    return None
+
+
+def _detect_ordinal_index(lowered: str) -> int | None:
+    if re.search(r"\b(first[-\s]?time|my\s+first|at\s+first)\b", lowered):
+        return None
+    if re.search(
+        r"(?:\bthe\s+(?:first|1st)\b|\b(?:first|1st)\s+(?:one|voyage|itinerary|sailing|cruise|option)\b|^\s*(?:first|1st)\s*[?.!]*$)",
+        lowered,
+    ):
+        return 0
+    if re.search(
+        r"(?:\bthe\s+(?:second|2nd)\b|\b(?:second|2nd)\s+(?:one|voyage|itinerary|sailing|cruise|option)\b|^\s*(?:second|2nd)\s*[?.!]*$)",
+        lowered,
+    ):
+        return 1
+    if re.search(
+        r"(?:\bthe\s+(?:third|3rd)\b|\b(?:third|3rd)\s+(?:one|voyage|itinerary|sailing|cruise|option)\b|^\s*(?:third|3rd)\s*[?.!]*$)",
+        lowered,
+    ):
+        return 2
+    if re.search(
+        r"(?:\bthe\s+(?:fourth|4th)\b|\b(?:fourth|4th)\s+(?:one|voyage|itinerary|sailing|cruise|option)\b|^\s*(?:fourth|4th)\s*[?.!]*$)",
+        lowered,
+    ):
+        return 3
+    if re.search(
+        r"(?:\bthe\s+last\s+(?:one|voyage|itinerary|sailing|cruise|option)\b|^\s*(?:the\s+)?last\s*[?.!]*$)",
+        lowered,
+    ) and not re.search(r"\bmy\s+last\b", lowered):
+        return -1
+    return None
+
+
+def _has_singular_voyage_anaphor(lowered: str) -> bool:
+    return bool(
+        re.search(
+            r"\b(that voyage|this voyage|that cruise|this cruise|that sailing|this sailing|that itinerary|this itinerary|this one|that one|the voyage|it|its)\b",
+            lowered,
+        )
+    )
+
+
+def _has_plural_voyage_anaphor(lowered: str) -> bool:
+    return bool(
+        re.search(
+            r"\b(those voyages|these voyages|those options|these options|those ones|these ones|those sailings|these sailings|those cruises|these cruises|both voyages|both of them|all of them|them|they|their)\b",
+            lowered,
+        )
+    )
+
+
+def _asks_similar_voyages(lowered: str) -> bool:
+    if re.search(
+        r"\b(similar voyages?|similar itineraries|similar sailings?|similar cruises?|anything like this|something like this|anything like it|something like it|anything like that|something like that|anything similar|something similar|more like this|more like it|comparable voyages?)\b",
+        lowered,
+    ):
+        return True
+    return "similar" in lowered and bool(
+        re.search(r"\b(voyage|voyages|itinerary|itineraries|cruise|cruises|sailing|sailings|option|options|trips?)\b", lowered)
+    )
+
+
+def _detect_catalog_attributes(lowered: str) -> list[str]:
+    attrs: list[str] = []
+    if re.search(
+        r"\b(embark|embarkation|embarkment|departure port|depart from|departs from|start from|starts from|starting port|homeport|home port|board in|boarding port|leave from|begin in)\b",
+        lowered,
+    ):
+        attrs.append("embarkation")
+    if re.search(
+        r"\b(how many days|how many nights|how long|duration|number of days|number of nights|length of)\b",
+        lowered,
+    ):
+        attrs.append("duration")
+    if re.search(r"\b(price|prices|pricing|cost|costs|how much|fare|fares|rate|rates)\b", lowered):
+        attrs.append("price")
+    if re.search(
+        r"\b(destinations?|ports?|stops?|route|routes|cover|covers|visit|visits|itinerary|itineraries|where does it go|where do they go)\b",
+        lowered,
+    ):
+        attrs.append("destinations")
+    if re.search(r"\b(ship|ships|yacht|yachts|vessel|which boat)\b", lowered):
+        attrs.append("ship")
+    if re.search(r"\b(season|seasons|time of year|what month|months|when does it sail|when do they sail|when is it)\b", lowered):
+        attrs.append("season")
+    if re.search(r"\b(suite|suites|cabin|cabins|stateroom|staterooms|room types|accommodations)\b", lowered):
+        attrs.append("suites")
+    return attrs
+
+
 def _build_suggested_replies(
     intent: str,
     recommendations: list[VoyageRecommendation],
@@ -143,9 +250,32 @@ def _build_suggested_replies(
     visitor_mode: bool = False,
     detected_yachts: list[str] | None = None,
     catalog_yachts: list[str] | None = None,
+    clarify_candidates: list[Voyage] | None = None,
 ) -> list[str]:
     if escalation.escalated or intent == "refuse_other_guest":
         return []
+    if intent == "clarify_voyage":
+        cands = list(clarify_candidates or referenced_voyages)
+        if cands:
+            sugs = [f"Tell me more about {v.voyage_name}" for v in cands[:2]]
+            sugs.append("Which one is the cheapest?")
+            return sugs[:3]
+    if intent in {"superlative_compare", "catalog_attribute", "similar_voyages"}:
+        if visitor_mode:
+            if referenced_voyages:
+                return [
+                    "Do you have any similar voyages?",
+                    "Voyage Collection",
+                    "Sign in for personal help",
+                ]
+            return ["Voyage Collection", "Experience Ambassador", "Sign in for personal help"]
+        if referenced_voyages:
+            v = referenced_voyages[0]
+            return [
+                f"Tell me more about {v.voyage_name}",
+                "Do you have any similar voyages?",
+                "Best voyage for me",
+            ]
     if intent == "yacht_catalog":
         yachts_used = list(detected_yachts or [])
         all_yachts = list(catalog_yachts or [])
@@ -314,10 +444,11 @@ class ConciergeAgent:
         ]
 
     def _extract_visitor_preferences(
-        self, request: ChatRequest
+        self, request: ChatRequest, history: list[ChatTurn] | None = None
     ) -> tuple[list[str], list[str], list[str]]:
         """Extract regions, seasons, and interests ONLY from visitor user turns in this conversation."""
-        user_texts = [t.content for t in request.history if t.role == "user" and t.content]
+        turns = history if history is not None else request.history
+        user_texts = [t.content for t in turns if t.role == "user" and t.content]
         user_texts.append(request.message)
         combined = "\n".join(user_texts)
 
@@ -494,6 +625,88 @@ class ConciergeAgent:
 
         return False
 
+    def _extract_voyages_from_text(self, text: str, voyages: list[Voyage]) -> list[Voyage]:
+        lowered = (text or "").lower()
+        if not lowered:
+            return []
+        hits: list[tuple[int, Voyage]] = []
+        for v in voyages:
+            pos_id = lowered.find(v.voyage_id.lower())
+            pos_name = lowered.find(v.voyage_name.lower())
+            positions = [p for p in (pos_id, pos_name) if p >= 0]
+            if positions:
+                hits.append((min(positions), v))
+        hits.sort(key=lambda item: item[0])
+        ordered: list[Voyage] = []
+        seen: set[str] = set()
+        for _, v in hits:
+            if v.voyage_id not in seen:
+                seen.add(v.voyage_id)
+                ordered.append(v)
+        return ordered
+
+    def _resolve_last_voyages_from_context(
+        self,
+        *,
+        effective_history: list[ChatTurn],
+        voyages: list[Voyage],
+        explicit_last_voyages: list[str] | None = None,
+    ) -> list[Voyage]:
+        by_id = {v.voyage_id.upper(): v for v in voyages}
+        if explicit_last_voyages is not None:
+            resolved: list[Voyage] = []
+            seen: set[str] = set()
+            for vid in explicit_last_voyages:
+                key = str(vid or "").strip().upper()
+                if key in by_id and key not in seen:
+                    seen.add(key)
+                    resolved.append(by_id[key])
+            return resolved
+
+        for turn in reversed(effective_history):
+            if turn.role != "assistant":
+                continue
+            if turn.voyage_ids:
+                resolved = []
+                seen = set()
+                for vid in turn.voyage_ids:
+                    key = str(vid or "").strip().upper()
+                    if key in by_id and key not in seen:
+                        seen.add(key)
+                        resolved.append(by_id[key])
+                return resolved
+            return self._extract_voyages_from_text(turn.content or "", voyages)
+        return []
+
+    def _find_similar_voyages(
+        self,
+        base_voyages: list[Voyage],
+        all_voyages: list[Voyage],
+        limit: int = 3,
+    ) -> list[Voyage]:
+        excluded_ids = {v.voyage_id.upper() for v in base_voyages}
+        base_regions = {v.destination.lower() for v in base_voyages if v.destination}
+        base_durations = [v.duration for v in base_voyages if v.duration]
+
+        scored: list[tuple[tuple[int, int, int], Voyage]] = []
+        for cand in all_voyages:
+            if cand.voyage_id.upper() in excluded_ids:
+                continue
+            same_region = cand.destination.lower() in base_regions
+            min_dur_diff = min((abs(cand.duration - d) for d in base_durations), default=999)
+            similar_duration = min_dur_diff <= 3
+            if not same_region and not similar_duration:
+                continue
+            rank = (
+                0 if same_region else (1 if min_dur_diff == 0 else 2),
+                min_dur_diff,
+                cand.price,
+            )
+            scored.append((rank, cand))
+
+        scored.sort(key=lambda item: item[0])
+        return [v for _, v in scored[:limit]]
+
     def _resolve_last_voyage_from_history(self, request: ChatRequest, voyages: list[Voyage]) -> Voyage | None:
         by_id = {v.voyage_id.upper(): v for v in voyages}
         for turn in reversed(request.history):
@@ -510,7 +723,18 @@ class ConciergeAgent:
         request: ChatRequest,
         session_customer_id: str | None = None,
         visitor_mode: bool = False,
+        conversation_history: list[ChatTurn] | None = None,
+        last_voyages: list[str] | None = None,
     ) -> ChatResponse:
+        effective_history = list(
+            (conversation_history if conversation_history is not None else request.history)[-8:]
+        )
+        previous_assistant_text = ""
+        for turn in reversed(effective_history):
+            if turn.role == "assistant" and turn.content:
+                previous_assistant_text = turn.content
+                break
+
         is_infa_provider = isinstance(self.data_provider, InformaticaProvider)
         if visitor_mode:
             profile = build_anonymous_profile()
@@ -603,7 +827,7 @@ class ConciergeAgent:
             )
 
         # 3. Experience Ambassador Escalation Check (complaint, refund, medical, allergy, wheelchair, human)
-        escalation = evaluate_escalation(profile, request.message, request.history)
+        escalation = evaluate_escalation(profile, request.message, effective_history)
         if escalation.escalated:
             if consent_applied:
                 used_fields.extend(["rcyc_id", "loyalty_tier"])
@@ -701,6 +925,7 @@ class ConciergeAgent:
                 request.message,
                 visitor_mode=visitor_mode,
             )
+            focus_context_ids = [r.voyage.voyage_id for r in focus_recs] + [v.voyage_id for v in focus_refs]
             return ChatResponse(
                 reply=reply,
                 guest_profile=to_public_profile(profile),
@@ -715,6 +940,7 @@ class ConciergeAgent:
                 escalation=EscalationInfo(escalated=False),
                 llm_provider_used=provider_used,
                 llm_fallback_triggered=fallback,
+                context_voyage_ids=focus_context_ids,
             )
 
         # 3b. Local-only Dietary & Accessibility inquiries (never sent to Gemini)
@@ -791,7 +1017,7 @@ class ConciergeAgent:
                 llm_fallback_triggered=fallback,
             )
 
-        # 4. Yacht Catalog & Booking / Past Voyage Questions
+        # 4. Yacht Catalog, Follow-up Context Resolution & Booking Questions
         all_voyages = self.data_provider.listVoyages()
         catalog_yachts = list(
             dict.fromkeys(
@@ -803,15 +1029,74 @@ class ConciergeAgent:
         explicit_voyage = self._detect_voyage_in_text(request.message, all_voyages)
         detected_yachts = self._detect_yachts(request.message, all_voyages)
         detected_regions = self._detect_destinations(request.message)
+        last_voyages_objs = self._resolve_last_voyages_from_context(
+            effective_history=effective_history,
+            voyages=all_voyages,
+            explicit_last_voyages=last_voyages,
+        )
+
+        superlative = _detect_superlative(lowered)
+        ordinal_idx = _detect_ordinal_index(lowered)
+        asks_similar = _asks_similar_voyages(lowered)
+        catalog_attrs = _detect_catalog_attributes(lowered)
+        has_singular_anaphor = _has_singular_voyage_anaphor(lowered)
+        has_plural_anaphor = _has_plural_voyage_anaphor(lowered)
 
         explicit_personal_booking = any(
             kw in lowered
-            for kw in ["my booking", "my bookings", "my reservation", "my reservations"]
+            for kw in [
+                "my booking",
+                "my bookings",
+                "my reservation",
+                "my reservations",
+                "booking details",
+                "upcoming booking",
+                "my ship",
+                "my yacht",
+                "my suite",
+                "my cabin",
+                "when do i sail",
+                "when am i sailing",
+                "how many voyages",
+                "past voyages",
+                "voyages have i",
+                "sailing date",
+                "sailing dates",
+                "am i booked",
+                "on file",
+            ]
         )
-        if detected_yachts and explicit_voyage is None and not explicit_personal_booking:
+        asks_next_personal_voyage = (
+            "next voyage" in lowered
+            and not detected_yachts
+            and not last_voyages_objs
+            and superlative is None
+            and ordinal_idx is None
+        )
+        has_catalog_context_or_ref = bool(
+            explicit_voyage is not None
+            or superlative is not None
+            or asks_similar
+            or ordinal_idx is not None
+            or "embarkation" in catalog_attrs
+            or (
+                last_voyages_objs
+                and (has_singular_anaphor or has_plural_anaphor or catalog_attrs)
+            )
+            or detected_regions
+        )
+
+        if (
+            detected_yachts
+            and explicit_voyage is None
+            and not explicit_personal_booking
+            and superlative is None
+            and not asks_similar
+            and ordinal_idx is None
+        ):
             active_yachts = list(detected_yachts)
             if "compare" in lowered and len(active_yachts) == 1:
-                for turn in reversed(request.history[-4:]):
+                for turn in reversed(effective_history[-4:]):
                     prev_yachts = self._detect_yachts(turn.content or "", all_voyages)
                     prev_other = [y for y in prev_yachts if y not in active_yachts]
                     if prev_other:
@@ -910,6 +1195,7 @@ class ConciergeAgent:
                 escalation=EscalationInfo(escalated=False),
                 llm_provider_used=provider_used,
                 llm_fallback_triggered=fallback,
+                context_voyage_ids=[v.voyage_id for v in yacht_referenced],
             )
 
         has_catalog_framing = explicit_voyage is not None or any(
@@ -930,33 +1216,13 @@ class ConciergeAgent:
         asks_booking_detail_nouns = (
             bool(re.search(r"\b(ship|yacht|suite|cabin|cabins|suites)\b", lowered))
             and not has_catalog_framing
+            and not has_catalog_context_or_ref
             and (
                 any(kw in lowered for kw in ["my ", "booking", "reservation", "am i", "do i", "have i", "on file"])
                 or (allow_booking_records and bool(bookings))
             )
         )
-        asks_booking = (
-            any(
-                kw in lowered
-                for kw in [
-                    "my booking",
-                    "my bookings",
-                    "booking details",
-                    "upcoming booking",
-                    "next voyage",
-                    "how many voyages",
-                    "past voyages",
-                    "voyages have i",
-                    "sailing date",
-                    "sailing dates",
-                    "when do i sail",
-                    "when am i sailing",
-                    "my reservation",
-                    "my reservations",
-                ]
-            )
-            or asks_booking_detail_nouns
-        )
+        asks_booking = explicit_personal_booking or asks_next_personal_voyage or asks_booking_detail_nouns
 
         if visitor_mode and (
             asks_booking
@@ -1008,6 +1274,7 @@ class ConciergeAgent:
                 escalation=EscalationInfo(escalated=False),
                 llm_provider_used=provider_used,
                 llm_fallback_triggered=fallback,
+                context_voyage_ids=[],
             )
 
         if asks_booking:
@@ -1054,10 +1321,10 @@ class ConciergeAgent:
                 escalation=EscalationInfo(escalated=False),
                 llm_provider_used=provider_used,
                 llm_fallback_triggered=fallback,
+                context_voyage_ids=[],
             )
 
-        # 5. Catalog, Detail, and Recommendation Handling
-        detected_regions = self._detect_destinations(request.message)
+        # 5. Catalog, Context Follow-ups, Detail, and Recommendation Handling
         detected_focuses = detect_query_focus(request.message)
 
         asks_recommend = any(
@@ -1105,6 +1372,7 @@ class ConciergeAgent:
             bool(re.search(r"\b(suite|suites|penthouse|terrace suite|owner's suite|grand suite|view suite|signature suite)\b", lowered))
             and explicit_voyage is None
             and not detected_regions
+            and not last_voyages_objs
         )
         asks_collection_overview = any(
             kw in lowered for kw in ["voyage collection", "browse catalog", "all voyages", "full collection"]
@@ -1113,23 +1381,160 @@ class ConciergeAgent:
         intent = "general"
         recommendations: list[VoyageRecommendation] = []
         referenced_voyages: list[Voyage] = []
+        followup_context: dict[str, object] | None = None
+        clarify_candidates: list[Voyage] = []
 
         visitor_clarified_in_history = visitor_mode and any(
             t.role == "assistant" and VISITOR_CLARIFY_MARKER in (t.content or "").lower()
-            for t in request.history
+            for t in effective_history
         )
         visitor_regions, visitor_seasons, visitor_focuses = (
-            self._extract_visitor_preferences(request) if visitor_mode else ([], [], [])
+            self._extract_visitor_preferences(request, effective_history) if visitor_mode else ([], [], [])
         )
 
-        if explicit_voyage is not None:
-            intent = "voyage_detail"
+        # 5a. Superlative comparison ("cheapest", "most affordable", "lowest price", "longest", "shortest")
+        if superlative is not None and not explicit_voyage:
+            metric_field, direction, label = superlative
+            pool = list(all_voyages)
+            scope_note = "From our Voyage Collection"
+            if detected_regions or detected_yachts:
+                if detected_regions:
+                    r_set = {r.lower() for r in detected_regions}
+                    pool = [v for v in pool if v.destination.lower() in r_set]
+                if detected_yachts:
+                    y_set = {y.lower() for y in detected_yachts}
+                    pool = [v for v in pool if v.yacht_name.lower() in y_set]
+                if not pool:
+                    pool = list(all_voyages)
+                else:
+                    scope_note = "From the matching catalog voyages"
+            elif last_voyages_objs:
+                pool = list(last_voyages_objs)
+                scope_note = "Of the voyages shown"
+
+            values = [getattr(v, metric_field) for v in pool]
+            target_val = min(values) if direction == "min" else max(values)
+            winners = [v for v in pool if getattr(v, metric_field) == target_val]
+            intent = "superlative_compare"
+            referenced_voyages = winners
+            followup_context = {"metric": metric_field, "direction": direction, "label": label, "scope_note": scope_note}
+
+        # 5b. Similar voyages ("similar voyages", "anything like this")
+        elif asks_similar:
+            if (
+                explicit_voyage is None
+                and ordinal_idx is None
+                and not detected_regions
+                and has_singular_anaphor
+                and not has_plural_anaphor
+                and re.search(r"\b(that voyage|this voyage|this one|that one|it)\b", lowered)
+                and len(last_voyages_objs) > 1
+            ):
+                intent = "clarify_voyage"
+                clarify_candidates = list(last_voyages_objs)
+                followup_context = {"candidates": clarify_candidates}
+            else:
+                base_voyages: list[Voyage] = []
+                if explicit_voyage is not None:
+                    base_voyages = [explicit_voyage]
+                elif ordinal_idx is not None and last_voyages_objs:
+                    idx = ordinal_idx if ordinal_idx >= 0 else len(last_voyages_objs) - 1
+                    if 0 <= idx < len(last_voyages_objs):
+                        base_voyages = [last_voyages_objs[idx]]
+                elif last_voyages_objs and not detected_regions and not detected_yachts:
+                    base_voyages = list(last_voyages_objs)
+                elif detected_regions or detected_yachts:
+                    base_voyages = [
+                        v
+                        for v in all_voyages
+                        if (not detected_regions or v.destination.lower() in {r.lower() for r in detected_regions})
+                        and (not detected_yachts or v.yacht_name.lower() in {y.lower() for y in detected_yachts})
+                    ]
+
+                if base_voyages:
+                    intent = "similar_voyages"
+                    referenced_voyages = self._find_similar_voyages(base_voyages, all_voyages, limit=3)
+                    followup_context = {"discussed_names": [v.voyage_name for v in base_voyages]}
+                elif last_voyages_objs:
+                    intent = "clarify_voyage"
+                    clarify_candidates = list(last_voyages_objs)
+                    followup_context = {"candidates": clarify_candidates}
+                else:
+                    intent = "general"
+
+        # 5c. Ordinal selection ("the first", "the second", "the third", "the last one")
+        elif ordinal_idx is not None and explicit_voyage is None:
+            if not last_voyages_objs:
+                intent = "general"
+            else:
+                resolved_idx = ordinal_idx if ordinal_idx >= 0 else len(last_voyages_objs) - 1
+                if 0 <= resolved_idx < len(last_voyages_objs):
+                    chosen = last_voyages_objs[resolved_idx]
+                    referenced_voyages = [chosen]
+                    if catalog_attrs and not asks_highlights:
+                        intent = "catalog_attribute"
+                        followup_context = {"attrs": catalog_attrs}
+                    elif catalog_attrs and any(a != "destinations" for a in catalog_attrs):
+                        intent = "catalog_attribute"
+                        followup_context = {"attrs": catalog_attrs}
+                    else:
+                        intent = "voyage_detail"
+                else:
+                    intent = "clarify_voyage"
+                    clarify_candidates = list(last_voyages_objs)
+                    followup_context = {"candidates": clarify_candidates}
+
+        # 5d. Explicit voyage detail or specific attribute question
+        elif explicit_voyage is not None:
             referenced_voyages = [explicit_voyage]
-        elif asks_highlights and not detected_regions:
-            ctx_voyage = self._resolve_last_voyage_from_history(request, all_voyages)
-            if ctx_voyage is not None:
+            if catalog_attrs and (
+                not asks_highlights
+                or "embarkation" in catalog_attrs
+                or any(a in {"duration", "price", "ship", "season", "suites"} for a in catalog_attrs)
+            ):
+                intent = "catalog_attribute"
+                followup_context = {"attrs": catalog_attrs}
+            else:
                 intent = "voyage_detail"
-                referenced_voyages = [ctx_voyage]
+
+        # 5e. Context anaphor / attribute follow-up referring to previous MARIS reply
+        elif (
+            last_voyages_objs
+            and not detected_regions
+            and not detected_yachts
+            and not asks_best_voyage
+            and not asks_different
+            and not asks_collection_overview
+            and (has_singular_anaphor or has_plural_anaphor or catalog_attrs or asks_highlights)
+        ):
+            if len(last_voyages_objs) > 1 and not has_plural_anaphor:
+                intent = "clarify_voyage"
+                clarify_candidates = list(last_voyages_objs)
+                followup_context = {"candidates": clarify_candidates}
+            elif catalog_attrs:
+                intent = "catalog_attribute"
+                referenced_voyages = list(last_voyages_objs)
+                followup_context = {"attrs": catalog_attrs}
+            else:
+                intent = "voyage_detail"
+                referenced_voyages = [last_voyages_objs[0]]
+
+        # 5f. Region + explicit catalog attribute question (when not asking for region overview/recommendations)
+        elif (
+            detected_regions
+            and catalog_attrs
+            and not asks_best_voyage
+            and not asks_recommend
+            and not asks_different
+            and any(a in {"duration", "embarkation", "season", "ship", "destinations"} for a in catalog_attrs)
+        ):
+            region_set = {r.lower() for r in detected_regions}
+            matched = [v for v in all_voyages if v.destination.lower() in region_set]
+            if matched:
+                intent = "catalog_attribute"
+                referenced_voyages = matched
+                followup_context = {"attrs": catalog_attrs}
+
         elif visitor_mode and (asks_best_voyage or (visitor_clarified_in_history and not asks_suite_catalog and not asks_collection_overview)):
             if not visitor_regions and not visitor_seasons and not visitor_focuses and not visitor_clarified_in_history:
                 intent = "visitor_clarify"
@@ -1185,6 +1590,7 @@ class ConciergeAgent:
             ]
 
         llm_referenced_voyages = referenced_voyages
+        is_ununderstood_fallback = False
         if intent == "general" and self._mentions_catalog_entity(request.message, all_voyages):
             llm_referenced_voyages = all_voyages
             if detected_regions:
@@ -1201,6 +1607,15 @@ class ConciergeAgent:
                 ]
                 if partial_matches:
                     referenced_voyages = partial_matches[:3]
+        elif intent == "general" and not recommendations and not referenced_voyages and request.attachment is None:
+            is_ununderstood_fallback = True
+            llm_referenced_voyages = all_voyages
+
+        recent_messages_payload = (
+            [{"role": t.role, "content": t.content} for t in effective_history[-8:]]
+            if is_ununderstood_fallback
+            else None
+        )
 
         reply, provider_used, fallback = self.llm_engine.generate_reply(
             profile=profile,
@@ -1214,6 +1629,10 @@ class ConciergeAgent:
             used_profile_fields=used_fields,
             visitor_mode=visitor_mode,
             attachment=request.attachment,
+            followup_context=followup_context,
+            previous_assistant_text=previous_assistant_text,
+            recent_messages=recent_messages_payload,
+            is_fallback=is_ununderstood_fallback,
         )
 
         logger.info(
@@ -1235,7 +1654,15 @@ class ConciergeAgent:
             visitor_mode=visitor_mode,
             detected_yachts=detected_yachts,
             catalog_yachts=catalog_yachts,
+            clarify_candidates=clarify_candidates,
         )
+        if intent == "clarify_voyage" and clarify_candidates:
+            context_voyage_ids = [v.voyage_id for v in clarify_candidates]
+        else:
+            context_voyage_ids = [r.voyage.voyage_id for r in recommendations] + [
+                v.voyage_id for v in referenced_voyages
+            ]
+
         return ChatResponse(
             reply=reply,
             guest_profile=to_public_profile(profile),
@@ -1250,4 +1677,5 @@ class ConciergeAgent:
             escalation=EscalationInfo(escalated=False),
             llm_provider_used=provider_used,
             llm_fallback_triggered=fallback,
+            context_voyage_ids=list(dict.fromkeys(context_voyage_ids)),
         )

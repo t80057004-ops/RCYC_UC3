@@ -1887,6 +1887,593 @@ def run_tests() -> None:
 
     results.append({"test": "Yacht detection, yacht_catalog intent, visitor yacht queries, general catalog LLM fallback & booking formatting", "status": "PASS"})
 
+    # 27. Conversation history persistence, search, cross-guest isolation, rename, feedback, privacy & retention
+    import sqlite3
+    import tempfile
+    from datetime import datetime, timedelta, timezone
+    from pathlib import Path
+    from backend.app.chat_store import ChatStore
+
+    with tempfile.TemporaryDirectory() as tmp_chat_dir:
+        tmp_db_path = Path(tmp_chat_dir) / "test_chat.db"
+        orig_chat_store = app_main.app.state.chat_store
+        iso_store = ChatStore(tmp_db_path, retention_days=30)
+
+        def fake_infa_http_27(method: str, url: str, headers=None, json=None, timeout=None):
+            if url.endswith("/search/public/api/v1/search"):
+                filters = (json or {}).get("filters", {}).get("filter", [])
+                val = str(filters[0].get("fieldValue", "")) if filters else ""
+                if val == "1000000099998":
+                    return FakeHttpResponse(
+                        200,
+                        {
+                            "searchResult": {
+                                "hits": 1,
+                                "records": [
+                                    {
+                                        "guest360": {"rcyc_id": "1000000099998"},
+                                        "_meta": {
+                                            "businessId": "BIZ-2002",
+                                            "states": {"recordStateIndicator": "ACTIVE"},
+                                        },
+                                    }
+                                ],
+                            }
+                        },
+                    )
+            if url.endswith("/business-entity/public/api/v1/entity/guest360/BIZ-2002"):
+                return FakeHttpResponse(
+                    200,
+                    {
+                        "rcyc_id": "1000000099998",
+                        "first_name": "Claire",
+                        "last_name": "Moreau",
+                        "full_name": "Claire Moreau",
+                        "email": [{"email_address": "claire.moreau@email.com"}],
+                        "phone": [{"country_code": "1", "phone_number": "3055550199"}],
+                    },
+                )
+            if url.endswith("/business-entity/public/api/v1/relationship/rel_g360_to_booking/filter") and (
+                (json or {}).get("filter", {}) == {"_from.businessId": "BIZ-2002"}
+                or "BIZ-2002" in str(json or "")
+            ):
+                return FakeHttpResponse(200, {"content": []})
+            return fake_infa_http_18(method, url, headers=headers, json=json, timeout=timeout)
+
+        try:
+            cfg_27 = make_infa_cfg(demo_assume=True)
+            prov_27 = InformaticaProvider(cfg_27)
+            eng_27 = PluggableLLMEngine(cfg_27)
+            app_main.app.state.settings = cfg_27
+            app_main.app.state.data_provider = prov_27
+            app_main.app.state.concierge_agent = ConciergeAgent(prov_27, eng_27)
+            app_main.app.state.chat_store = iso_store
+            app_main.login_failures.clear()
+            app_main.login_blocked_until.clear()
+            app_main.ip_login_failures.clear()
+            app_main.ip_login_blocked_until.clear()
+            app_main.visitor_chat_timestamps.clear()
+            app_main.revoked_session_tokens.clear()
+
+            with patch("backend.app.data_provider.httpx.request", side_effect=fake_infa_http_27):
+                c_unauth = TestClient(app_main.app, base_url="https://testserver")
+                # 27a. Unauthenticated requests -> 401; Visitor tokens -> 403
+                assert c_unauth.get("/api/conversations").status_code == 401
+                assert c_unauth.post("/api/conversations", json={"title": "Test"}).status_code == 401
+                assert c_unauth.get("/api/conversations/conv_missing").status_code == 401
+                assert c_unauth.patch("/api/conversations/conv_missing", json={"title": "X"}).status_code == 401
+                assert c_unauth.delete("/api/conversations/conv_missing").status_code == 401
+                assert (
+                    c_unauth.post(
+                        "/api/feedback",
+                        json={"conversation_id": "conv_missing", "message_id": "msg_missing", "vote": "up"},
+                    ).status_code
+                    == 401
+                )
+
+                v27_tok = c_unauth.post("/api/visitor").json()["token"]
+                v27_hdr = {"Authorization": f"Bearer {v27_tok}"}
+                assert c_unauth.get("/api/conversations", headers=v27_hdr).status_code == 403
+                assert c_unauth.post("/api/conversations", headers=v27_hdr, json={"title": "Test"}).status_code == 403
+                assert c_unauth.get("/api/conversations/conv_missing", headers=v27_hdr).status_code == 403
+                assert c_unauth.patch("/api/conversations/conv_missing", headers=v27_hdr, json={"title": "X"}).status_code == 403
+                assert c_unauth.delete("/api/conversations/conv_missing", headers=v27_hdr).status_code == 403
+                assert (
+                    c_unauth.post(
+                        "/api/feedback",
+                        headers=v27_hdr,
+                        json={"conversation_id": "conv_missing", "message_id": "msg_missing", "vote": "up"},
+                    ).status_code
+                    == 403
+                )
+
+                # Sign in Guest A and Guest B
+                c_a = TestClient(app_main.app, base_url="https://testserver")
+                tok_a = c_a.post(
+                    "/api/login",
+                    json={"customer_id": "1000000092615", "password": "TestDemoPassword123!"},
+                ).json()["token"]
+                hdr_a = {"Authorization": f"Bearer {tok_a}"}
+
+                c_b = TestClient(app_main.app, base_url="https://testserver")
+                tok_b = c_b.post(
+                    "/api/login",
+                    json={"customer_id": "1000000099998", "password": "TestDemoPassword123!"},
+                ).json()["token"]
+                hdr_b = {"Authorization": f"Bearer {tok_b}"}
+
+                # 27b. First /api/chat creates conversation auto-titled from first 6 words (ignores body rcyc_id)
+                r_chat_1 = c_a.post(
+                    "/api/chat",
+                    headers=hdr_a,
+                    json={
+                        "rcyc_id": "1000000099998",
+                        "message": "What are my Mediterranean luxury cruise options right now?",
+                    },
+                )
+                assert r_chat_1.status_code == 200, r_chat_1.text
+                d_c1 = r_chat_1.json()
+                conv_1_id = d_c1["conversation_id"]
+                assert conv_1_id and conv_1_id.startswith("conv_")
+                assert d_c1["conversation_title"] == "What are my Mediterranean luxury cruise"
+                assert d_c1["user_message_id"] and d_c1["assistant_message_id"]
+                assert d_c1["user_created_at"] and d_c1["assistant_created_at"]
+                assert "claire" not in d_c1["reply"].lower()
+
+                # Follow-up turn attaches to the same conversation_id
+                r_chat_2 = c_a.post(
+                    "/api/chat",
+                    headers=hdr_a,
+                    json={
+                        "conversation_id": conv_1_id,
+                        "message": "Show Ilma 100% private terrace suites",
+                    },
+                )
+                assert r_chat_2.status_code == 200
+                d_c2 = r_chat_2.json()
+                assert d_c2["conversation_id"] == conv_1_id
+                assert d_c2["conversation_title"] == "What are my Mediterranean luxury cruise"
+
+                # POST /api/conversations creates a new empty conversation ("New chat") and updates on first exchange
+                r_new_conv = c_a.post("/api/conversations", headers=hdr_a, json={})
+                assert r_new_conv.status_code == 201
+                conv_2_id = r_new_conv.json()["id"]
+                assert r_new_conv.json()["title"] == "New chat"
+
+                r_chat_3 = c_a.post(
+                    "/api/chat",
+                    headers=hdr_a,
+                    json={
+                        "conversation_id": conv_2_id,
+                        "message": "Tell me about Evrima dining selections onboard today",
+                    },
+                )
+                assert r_chat_3.status_code == 200
+                assert r_chat_3.json()["conversation_title"] == "Tell me about Evrima dining selections"
+
+                # Newest first ordering
+                r_list_a = c_a.get("/api/conversations", headers=hdr_a)
+                assert r_list_a.status_code == 200
+                convs_a = r_list_a.json()["conversations"]
+                assert [c["id"] for c in convs_a] == [conv_2_id, conv_1_id]
+
+                # Search ?q= filters by title/message text AND escapes LIKE wildcards (%, _, \)
+                r_q_ev = c_a.get("/api/conversations?q=Evrima%20dining%20selections", headers=hdr_a).json()["conversations"]
+                assert [c["id"] for c in r_q_ev] == [conv_2_id]
+                assert len(c_a.get("/api/conversations?q=100%25", headers=hdr_a).json()["conversations"]) == 1
+                assert c_a.get("/api/conversations?q=100%25", headers=hdr_a).json()["conversations"][0]["id"] == conv_1_id
+                assert len(c_a.get("/api/conversations?q=%25", headers=hdr_a).json()["conversations"]) == 1
+                assert len(c_a.get("/api/conversations?q=_", headers=hdr_a).json()["conversations"]) == 0
+                assert len(c_a.get("/api/conversations?q=%5C", headers=hdr_a).json()["conversations"]) == 0
+
+                # 27c. Rename validation (trimmed 1..80 chars; rejects whitespace-only or >80 chars)
+                assert c_a.patch(f"/api/conversations/{conv_1_id}", headers=hdr_a, json={"title": "   "}).status_code == 422
+                assert c_a.patch(f"/api/conversations/{conv_1_id}", headers=hdr_a, json={"title": "A" * 81}).status_code == 422
+                r_ren = c_a.patch(
+                    f"/api/conversations/{conv_1_id}",
+                    headers=hdr_a,
+                    json={"title": "   Med Yacht Plans   "},
+                )
+                assert r_ren.status_code == 200
+                assert r_ren.json()["title"] == "Med Yacht Plans"
+
+                # 27d. Feedback (up -> down upsert; invalid vote & user-message vote -> 422)
+                asst_msg_id = d_c1["assistant_message_id"]
+                usr_msg_id = d_c1["user_message_id"]
+                r_fb_up = c_a.post(
+                    "/api/feedback",
+                    headers=hdr_a,
+                    json={"conversation_id": conv_1_id, "message_id": asst_msg_id, "vote": "up"},
+                )
+                assert r_fb_up.status_code == 200 and r_fb_up.json()["vote"] == "up"
+
+                r_fb_down = c_a.post(
+                    "/api/feedback",
+                    headers=hdr_a,
+                    json={"conversation_id": conv_1_id, "message_id": asst_msg_id, "vote": "down"},
+                )
+                assert r_fb_down.status_code == 200 and r_fb_down.json()["vote"] == "down"
+
+                assert (
+                    c_a.post(
+                        "/api/feedback",
+                        headers=hdr_a,
+                        json={"conversation_id": conv_1_id, "message_id": asst_msg_id, "vote": "sideways"},
+                    ).status_code
+                    == 422
+                )
+                assert (
+                    c_a.post(
+                        "/api/feedback",
+                        headers=hdr_a,
+                        json={"conversation_id": conv_1_id, "message_id": usr_msg_id, "vote": "up"},
+                    ).status_code
+                    == 422
+                )
+
+                r_det = c_a.get(f"/api/conversations/{conv_1_id}", headers=hdr_a)
+                assert r_det.status_code == 200
+                msgs_det = r_det.json()["messages"]
+                assert len(msgs_det) == 4
+                assert next(m for m in msgs_det if m["id"] == asst_msg_id)["vote"] == "down"
+
+                # 27e. Cross-guest isolation: Guest B gets 404 on every read/write/chat/feedback referencing Guest A
+                assert c_b.get("/api/conversations", headers=hdr_b).json()["conversations"] == []
+                assert c_b.get(f"/api/conversations/{conv_1_id}", headers=hdr_b).status_code == 404
+                assert (
+                    c_b.patch(f"/api/conversations/{conv_1_id}", headers=hdr_b, json={"title": "Stolen"}).status_code
+                    == 404
+                )
+                assert c_b.delete(f"/api/conversations/{conv_1_id}", headers=hdr_b).status_code == 404
+                assert (
+                    c_b.post(
+                        "/api/chat",
+                        headers=hdr_b,
+                        json={"conversation_id": conv_1_id, "message": "Hijack thread"},
+                    ).status_code
+                    == 404
+                )
+                assert (
+                    c_b.post(
+                        "/api/feedback",
+                        headers=hdr_b,
+                        json={"conversation_id": conv_1_id, "message_id": asst_msg_id, "vote": "up"},
+                    ).status_code
+                    == 404
+                )
+
+                # 27f. Schema privacy audit: no email, phone, loyalty tier, or Informatica payload persisted in SQLite
+                with sqlite3.connect(str(tmp_db_path)) as conn:
+                    conv_cols = {r[1] for r in conn.execute("PRAGMA table_info(conversations)").fetchall()}
+                    msg_cols = {r[1] for r in conn.execute("PRAGMA table_info(messages)").fetchall()}
+                    fb_cols = {r[1] for r in conn.execute("PRAGMA table_info(message_feedback)").fetchall()}
+                    assert conv_cols == {"id", "customer_id", "title", "created_at", "updated_at"}
+                    assert msg_cols == {"id", "conversation_id", "role", "text", "created_at", "last_voyages"}
+                    assert fb_cols == {"conversation_id", "message_id", "customer_id", "vote", "created_at", "updated_at"}
+                    all_dump = json.dumps(
+                        [
+                            conn.execute("SELECT * FROM conversations").fetchall(),
+                            conn.execute("SELECT * FROM messages").fetchall(),
+                            conn.execute("SELECT * FROM message_feedback").fetchall(),
+                        ]
+                    ).lower()
+                    assert "dennis.woods" not in all_dump
+                    assert "3055550147" not in all_dump
+                    assert "sapphire" not in all_dump
+
+                # 27g. Delete cascades messages & feedback
+                r_del = c_a.delete(f"/api/conversations/{conv_1_id}", headers=hdr_a)
+                assert r_del.status_code == 200 and r_del.json()["deleted"] is True
+                assert c_a.get(f"/api/conversations/{conv_1_id}", headers=hdr_a).status_code == 404
+                with sqlite3.connect(str(tmp_db_path)) as conn:
+                    assert conn.execute("SELECT COUNT(*) FROM messages WHERE conversation_id = ?", (conv_1_id,)).fetchone()[0] == 0
+                    assert conn.execute("SELECT COUNT(*) FROM message_feedback WHERE conversation_id = ?", (conv_1_id,)).fetchone()[0] == 0
+
+                # 27h. Retention cleanup deletes conversations older than 30 days on startup & direct call
+                old_iso = (datetime.now(timezone.utc) - timedelta(days=45)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+                old_conv = iso_store.create_conversation("1000000092615", title="Old trip")
+                old_ex = iso_store.append_exchange("1000000092615", old_conv["id"], "Old Q", "Old A")
+                assert old_ex is not None
+                with sqlite3.connect(str(tmp_db_path)) as conn:
+                    conn.execute("UPDATE conversations SET updated_at = ? WHERE id = ?", (old_iso, old_conv["id"]))
+                    conn.commit()
+
+                # Startup lifespan runs retention cleanup
+                with TestClient(app_main.app, base_url="https://testserver"):
+                    pass
+                remaining_ids = [c["id"] for c in iso_store.list_conversations("1000000092615")]
+                assert old_conv["id"] not in remaining_ids
+                assert conv_2_id in remaining_ids
+        finally:
+            app_main.app.state.settings = orig_settings_14
+            app_main.app.state.data_provider = orig_provider
+            app_main.app.state.concierge_agent = orig_agent
+            app_main.app.state.chat_store = orig_chat_store
+            app_main.login_failures.clear()
+            app_main.login_blocked_until.clear()
+            app_main.ip_login_failures.clear()
+            app_main.ip_login_blocked_until.clear()
+            app_main.visitor_chat_timestamps.clear()
+            app_main.revoked_session_tokens.clear()
+
+    results.append({"test": "Conversation history CRUD, search LIKE escaping, cross-guest 404, rename, feedback, privacy & 30d retention", "status": "PASS"})
+
+    # 28. Follow-up context (last 8 messages + last_voyages), reference resolution, ambiguity,
+    # superlatives, catalog attributes, similar voyages, non-repeating fallback, Gemini fallback & consent gating
+    with tempfile.TemporaryDirectory() as tmp_ctx_dir:
+        tmp_ctx_db = Path(tmp_ctx_dir) / "test_followup_context.db"
+        orig_chat_store_28 = app_main.app.state.chat_store
+        ctx_store = ChatStore(tmp_ctx_db, retention_days=30)
+
+        try:
+            cfg_28 = make_infa_cfg(demo_assume=True)
+            prov_28 = InformaticaProvider(cfg_28)
+            eng_28 = PluggableLLMEngine(cfg_28)
+            app_main.app.state.settings = cfg_28
+            app_main.app.state.data_provider = prov_28
+            app_main.app.state.concierge_agent = ConciergeAgent(prov_28, eng_28)
+            app_main.app.state.chat_store = ctx_store
+            app_main.login_failures.clear()
+            app_main.login_blocked_until.clear()
+            app_main.ip_login_failures.clear()
+            app_main.ip_login_blocked_until.clear()
+            app_main.revoked_session_tokens.clear()
+
+            with patch("backend.app.data_provider.httpx.request", side_effect=fake_infa_http_18):
+                c_28 = TestClient(app_main.app, base_url="https://testserver")
+                tok_28 = c_28.post(
+                    "/api/login",
+                    json={"customer_id": "1000000092615", "password": "TestDemoPassword123!"},
+                ).json()["token"]
+                hdr_28 = {"Authorization": f"Bearer {tok_28}"}
+
+                # 28a. Start by asking for all available Caribbean voyages
+                r_car = c_28.post(
+                    "/api/chat",
+                    headers=hdr_28,
+                    json={"message": "Show me all available Caribbean voyages"},
+                )
+                assert r_car.status_code == 200, r_car.text
+                d_car = r_car.json()
+                conv_28_id = d_car["conversation_id"]
+                assert [v["voyage_id"] for v in d_car["referenced_voyages"]] == ["RCYC-CAR-01", "RCYC-CAR-02"]
+
+                # Ambiguous "that voyage" after showing 2 voyages -> MUST ask which one by name, never guess
+                r_amb = c_28.post(
+                    "/api/chat",
+                    headers=hdr_28,
+                    json={"conversation_id": conv_28_id, "message": "How many days is that voyage?"},
+                )
+                assert r_amb.status_code == 200
+                d_amb = r_amb.json()
+                assert "leeward islands & st. barths escape" in d_amb["reply"].lower()
+                assert "grenadines & tobago cays sanctuary" in d_amb["reply"].lower()
+                assert "7 nights" not in d_amb["reply"].lower()
+                assert "10 nights" not in d_amb["reply"].lower()
+
+                # "the second" ordinal resolves to RCYC-CAR-02 ("10 nights", no invented "days")
+                r_sec = c_28.post(
+                    "/api/chat",
+                    headers=hdr_28,
+                    json={"conversation_id": conv_28_id, "message": "How many days is the second one?"},
+                )
+                assert r_sec.status_code == 200
+                d_sec = r_sec.json()
+                assert "grenadines & tobago cays sanctuary" in d_sec["reply"].lower()
+                assert "10 nights" in d_sec["reply"].lower()
+                assert "days" not in d_sec["reply"].lower()
+
+                # Re-list Caribbean voyages -> superlative "Which one is the cheapest?"
+                r_car_2 = c_28.post(
+                    "/api/chat",
+                    headers=hdr_28,
+                    json={"conversation_id": conv_28_id, "message": "Show me all available Caribbean voyages"},
+                )
+                assert r_car_2.status_code == 200
+
+                # "longest" compares Caribbean voyages -> RCYC-CAR-02 ($9,400, 10 nights)
+                r_long = c_28.post(
+                    "/api/chat",
+                    headers=hdr_28,
+                    json={"conversation_id": conv_28_id, "message": "Which one is the longest?"},
+                )
+                assert r_long.status_code == 200
+                d_long = r_long.json()
+                assert "grenadines & tobago cays sanctuary" in d_long["reply"].lower()
+                assert "10 nights" in d_long["reply"].lower()
+                assert "$9,400" in d_long["reply"]
+
+                # Reset comparison pool by listing Caribbean voyages again, then ask "Which one is the cheapest?"
+                c_28.post(
+                    "/api/chat",
+                    headers=hdr_28,
+                    json={"conversation_id": conv_28_id, "message": "Show me all available Caribbean voyages"},
+                )
+                r_cheap = c_28.post(
+                    "/api/chat",
+                    headers=hdr_28,
+                    json={"conversation_id": conv_28_id, "message": "Which one is the cheapest?"},
+                )
+                assert r_cheap.status_code == 200
+                d_cheap = r_cheap.json()
+                assert "leeward islands & st. barths escape" in d_cheap["reply"].lower()
+                assert "$6,900" in d_cheap["reply"]
+                assert "7 nights" in d_cheap["reply"].lower()
+
+                # Single resolved voyage in last_voyages -> "How many days is that voyage?" says "7 nights", no "days"
+                r_dur = c_28.post(
+                    "/api/chat",
+                    headers=hdr_28,
+                    json={"conversation_id": conv_28_id, "message": "How many days is that voyage?"},
+                )
+                assert r_dur.status_code == 200
+                assert "7 nights" in r_dur.json()["reply"].lower()
+                assert "days" not in r_dur.json()["reply"].lower()
+
+                # "What destinations does it cover?" -> Caribbean + ports
+                r_dest = c_28.post(
+                    "/api/chat",
+                    headers=hdr_28,
+                    json={"conversation_id": conv_28_id, "message": "What destinations does it cover?"},
+                )
+                assert r_dest.status_code == 200
+                d_dest_txt = r_dest.json()["reply"]
+                assert "Caribbean" in d_dest_txt
+                assert "San Juan" in d_dest_txt and "Gustavia (St. Barths)" in d_dest_txt
+
+                # "What ship is it on?", "What season?", "What suites does it have?", "What is the embarkation port?"
+                r_ship = c_28.post(
+                    "/api/chat",
+                    headers=hdr_28,
+                    json={"conversation_id": conv_28_id, "message": "What ship is it on?"},
+                )
+                assert r_ship.status_code == 200
+                assert "Evrima" in r_ship.json()["reply"]
+
+                r_season = c_28.post(
+                    "/api/chat",
+                    headers=hdr_28,
+                    json={"conversation_id": conv_28_id, "message": "What season is that voyage?"},
+                )
+                assert r_season.status_code == 200
+                assert "Winter 2026-27" in r_season.json()["reply"]
+
+                r_suites = c_28.post(
+                    "/api/chat",
+                    headers=hdr_28,
+                    json={"conversation_id": conv_28_id, "message": "What suites does it have?"},
+                )
+                assert r_suites.status_code == 200
+                assert "Terrace Suite" in r_suites.json()["reply"] and "Owner's Suite" in r_suites.json()["reply"]
+
+                r_emb = c_28.post(
+                    "/api/chat",
+                    headers=hdr_28,
+                    json={"conversation_id": conv_28_id, "message": "What is the embarkation port?"},
+                )
+                assert r_emb.status_code == 200
+                assert "San Juan" in r_emb.json()["reply"]
+
+                # "Do you have any similar voyages?" -> excludes RCYC-CAR-01, includes same region or 7-night voyages
+                r_sim = c_28.post(
+                    "/api/chat",
+                    headers=hdr_28,
+                    json={"conversation_id": conv_28_id, "message": "Do you have any similar voyages?"},
+                )
+                assert r_sim.status_code == 200
+                d_sim = r_sim.json()
+                sim_ids = [v["voyage_id"] for v in d_sim["referenced_voyages"]]
+                assert len(sim_ids) >= 2
+                assert "RCYC-CAR-01" not in sim_ids
+                assert "RCYC-CAR-02" in sim_ids
+
+                # Verify SQLite stores last_voyages with assistant messages and get_recent_context loads at most 8
+                with sqlite3.connect(str(tmp_ctx_db)) as conn:
+                    stored_vids = [
+                        json.loads(row[0])
+                        for row in conn.execute(
+                            "SELECT last_voyages FROM messages WHERE conversation_id = ? AND role = 'assistant' ORDER BY created_at ASC",
+                            (conv_28_id,),
+                        ).fetchall()
+                    ]
+                assert ["RCYC-CAR-01", "RCYC-CAR-02"] in stored_vids
+                assert stored_vids[-1] == sim_ids
+                ctx_pair = ctx_store.get_recent_context("1000000092615", conv_28_id, limit=8)
+                assert ctx_pair is not None and len(ctx_pair[0]) == 8 and ctx_pair[1] == sim_ids
+                assert ctx_store.get_recent_context("9999999999999", conv_28_id, limit=8) is None
+
+                # 28b. Fallback: replaces generic welcome sentence and NEVER repeats same fallback text twice in a row
+                r_fb_conv = c_28.post("/api/conversations", headers=hdr_28, json={"title": "Fallback check"}).json()
+                conv_fb_id = r_fb_conv["id"]
+                r_fb_1 = c_28.post(
+                    "/api/chat",
+                    headers=hdr_28,
+                    json={"conversation_id": conv_fb_id, "message": "blorp xyzzy unknown question"},
+                )
+                r_fb_2 = c_28.post(
+                    "/api/chat",
+                    headers=hdr_28,
+                    json={"conversation_id": conv_fb_id, "message": "another completely mysterious glorp"},
+                )
+                assert r_fb_1.status_code == 200 and r_fb_2.status_code == 200
+                fb_txt_1 = r_fb_1.json()["reply"]
+                fb_txt_2 = r_fb_2.json()["reply"]
+                assert "i would be pleased to help" not in fb_txt_1.lower()
+                assert "i would be pleased to help" not in fb_txt_2.lower()
+                assert "?" in fb_txt_1 and "?" in fb_txt_2
+                assert fb_txt_1.strip() != fb_txt_2.strip(), "Fallback text repeated twice in a row!"
+        finally:
+            app_main.app.state.settings = orig_settings_14
+            app_main.app.state.data_provider = orig_provider
+            app_main.app.state.concierge_agent = orig_agent
+            app_main.app.state.chat_store = orig_chat_store_28
+            app_main.login_failures.clear()
+            app_main.login_blocked_until.clear()
+            app_main.ip_login_failures.clear()
+            app_main.ip_login_blocked_until.clear()
+            app_main.revoked_session_tokens.clear()
+
+    # 28c. Gemini fallback receives question, last 8 messages, catalog & strict instruction (and respects consent=False)
+    fb_gemini_payloads: list[dict[str, object]] = []
+
+    class FallbackGeminiCapturer(PluggableLLMEngine):
+        def _call_gemini(self, facts: dict[str, object]) -> str:
+            fb_gemini_payloads.append(facts)
+            return "I don't have that detail"
+
+    fb_cap_cfg = Settings(
+        port=base_cfg.port,
+        log_level=base_cfg.log_level,
+        sample_data_json=base_cfg.sample_data_json,
+        data_provider_mode="mock",
+        demo_mode=True,
+        llm_provider="gemini",
+        gemini_api_key="test-double-key",
+        gemini_model=base_cfg.gemini_model,
+        ollama_base_url=base_cfg.ollama_base_url,
+        ollama_model=base_cfg.ollama_model,
+        anthropic_api_key="",
+        anthropic_model=base_cfg.anthropic_model,
+    )
+    fb_cap_agent = ConciergeAgent(MockProvider(fb_cap_cfg.sample_data_json), FallbackGeminiCapturer(fb_cap_cfg))
+    long_history = [
+        ChatTurn(role=("user" if i % 2 == 0 else "assistant"), content=f"Turn message {i}")
+        for i in range(10)
+    ]
+    res_fb_gem = fb_cap_agent.handle_chat(
+        ChatRequest(rcyc_id="RCYC-1004", message="What is your onboard luggage weight limit and pet policy?", history=long_history)
+    )
+    assert res_fb_gem.consent_applied is False
+    assert res_fb_gem.reply == "I don't have that detail"
+    assert len(fb_gemini_payloads) == 1
+    assert len(fb_gemini_payloads[0]["recent_messages"]) == 8  # type: ignore[arg-type]
+    assert len(fb_gemini_payloads[0]["catalog_voyages"]) == 12  # type: ignore[arg-type]
+    assert "i don't have that detail" in str(fb_gemini_payloads[0]["instruction"]).lower()
+    assert "first_name" not in fb_gemini_payloads[0]
+
+    # 28d. Consent OFF follow-up flow uses only catalog facts and zero guest history (RCYC-1004)
+    r_c4_car = client.post("/api/chat", json={"rcyc_id": "RCYC-1004", "message": "Show me all available Caribbean voyages"})
+    assert r_c4_car.status_code == 200
+    d_c4_car = r_c4_car.json()
+    assert d_c4_car["consent_applied"] is False and d_c4_car["used_profile_fields"] == []
+    h_c4 = [
+        {"role": "user", "content": "Show me all available Caribbean voyages", "voyage_ids": []},
+        {"role": "assistant", "content": d_c4_car["reply"], "voyage_ids": [v["voyage_id"] for v in d_c4_car["referenced_voyages"]]},
+    ]
+    r_c4_cheap = client.post(
+        "/api/chat",
+        json={"rcyc_id": "RCYC-1004", "message": "Which one is the cheapest?", "history": h_c4},
+    )
+    assert r_c4_cheap.status_code == 200
+    d_c4_cheap = r_c4_cheap.json()
+    assert d_c4_cheap["consent_applied"] is False
+    assert d_c4_cheap["used_profile_fields"] == []
+    assert d_c4_cheap["bookings"] == []
+    assert "leeward islands & st. barths escape" in d_c4_cheap["reply"].lower()
+    assert "$6,900" in d_c4_cheap["reply"] and "7 nights" in d_c4_cheap["reply"].lower()
+
+    results.append({"test": "Follow-up context (last 8 + last_voyages), ambiguity, superlatives, catalog intents, non-repeating fallback & consent", "status": "PASS"})
+
     print(json.dumps(results, indent=2))
 
 
